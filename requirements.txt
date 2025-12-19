@@ -2,6 +2,6 @@ streamlit
 pandas
 matplotlib
 yfinance
-tvDatafeed
 openpyxl
 xlsxwriter
+git+https://github.com/rongardF/tvdatafeed.git
