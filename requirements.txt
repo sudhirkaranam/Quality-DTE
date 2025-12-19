@@ -1,0 +1,7 @@
+streamlit
+pandas
+matplotlib
+yfinance
+tvDatafeed
+openpyxl
+xlsxwriter
