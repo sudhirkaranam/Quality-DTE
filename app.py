@@ -6,10 +6,13 @@ import yfinance as yf
 from tvDatafeed import TvDatafeed, Interval
 import io
 
+# Setup non-interactive plotting
 matplotlib.use('Agg')
-st.set_page_config(page_title="Stock DTE Analyzer", layout="wide")
 
-st.title("🎯 Stock DTE Analyzer")
+st.set_page_config(page_title="Ultimate Stock DTE & Quality Analyzer", layout="wide")
+
+st.title("📊 Comprehensive Stock Analyzer")
+st.write("Processing all stocks with full Technical DTE and Fundamental Quality data.")
 
 # --- Helper Functions ---
 
@@ -21,123 +24,114 @@ def get_mcap_category(mcap):
     elif mcap_cr >= 5000: return "Mid Cap"
     else: return "Small Cap"
 
-def is_quality_stock(info):
-    """Sector-specific quality check logic."""
-    try:
-        sector = info.get('sector', 'Unknown')
-        margin = info.get('operatingMargins', 0) or 0
-        if "Financial" in sector:
-            roa = info.get('returnOnAssets', 0) or 0
-            if roa > 0.008 and margin > 0.10:
-                return True, f"ROA: {round(roa*100, 2)}%", sector
-        else:
-            roe = info.get('returnOnEquity', 0) or 0
-            d_e = (info.get('debtToEquity', 100) or 100) / 100
-            if roe > 0.12 and d_e < 1.2 and margin > 0.08:
-                return True, f"ROE: {round(roe*100, 2)}%", sector
-        return False, None, sector
-    except:
-        return False, None, "Unknown"
-
 def calculate_dte_metrics(df):
     """Returns gap and the actual DTE Price level."""
     try:
         if df is None or df.empty or len(df) < 5: return None
         current_price = df['close'].iloc[-1]
+        
         fig, ax1 = plt.subplots()
         ax1.plot(df.index, df['close'])
         ax2 = ax1.twinx()
         ax2.bar(df.index, df['volume'])
+        
         p_min, p_max = ax1.get_ylim()
         v_min, v_max = ax2.get_ylim()
         plt.close(fig) 
+        
         max_vol = df['volume'].max()
         v_range = (v_max - v_min)
         if v_range == 0: return None
+        
         rel_height = (max_vol - v_min) / v_range
         dte_price = p_min + (rel_height * (p_max - p_min))
         percent_gap = ((dte_price - current_price) / current_price) * 100
+        
         return {'gap': round(percent_gap, 2), 'price': round(current_price, 2), 'dte_lvl': round(dte_price, 2)}
     except:
         return None
 
-# --- UI Controls ---
+# --- UI Sidebar & Upload ---
 
-analysis_type = st.radio("Select Analysis Type:", ["Quality DTE (Filtered)", "All Stocks DTE (Unfiltered)"])
-uploaded_file = st.file_uploader("Upload 'stocks.xlsx'", type=["xlsx"])
+uploaded_file = st.file_uploader("Upload 'stocks.xlsx' (column 'symbol' required)", type=["xlsx"])
 
 if uploaded_file:
     df_input = pd.read_excel(uploaded_file)
     stock_list = df_input['symbol'].tolist()
     
-    if st.button("🚀 Run Analysis"):
+    if st.button("🚀 Run Full Analysis"):
         tv = TvDatafeed()
         results = []
         progress_bar = st.progress(0)
+        status_text = st.empty()
         
         for i, symbol in enumerate(stock_list):
+            status_text.text(f"Processing {symbol} ({i+1}/{len(stock_list)})")
             try:
+                # 1. Fetch Fundamentals (No filtering, just data collection)
                 ticker = yf.Ticker(f"{symbol}.NS")
                 info = ticker.info
-                mcap_cat = get_mcap_category(info.get('marketCap'))
                 
-                # Logic for Quality Filter
-                is_qual = True
-                metric_val = "N/A"
-                sector_name = info.get('sector', 'Unknown')
+                sector = info.get('sector', 'Unknown')
+                mcap = info.get('marketCap')
+                mcap_cat = get_mcap_category(mcap)
                 
-                if analysis_type == "Quality DTE (Filtered)":
-                    is_qual, metric_val, sector_name = is_quality_stock(info)
+                # Moat Metrics
+                roe = info.get('returnOnEquity', 0)
+                roa = info.get('returnOnAssets', 0)
+                debt_eq = info.get('debtToEquity', 0)
+                op_margin = info.get('operatingMargins', 0)
                 
-                if is_qual:
-                    gaps, dte_lvls, curr_p = {}, {}, 0
-                    for label, tv_int in {'Daily': Interval.in_daily, 'Weekly': Interval.in_weekly, 'Monthly': Interval.in_monthly}.items():
-                        hist = tv.get_hist(symbol=symbol, exchange='NSE', interval=tv_int, n_bars=100)
-                        data = calculate_dte_metrics(hist)
-                        if data:
-                            gaps[label] = data['gap']
-                            dte_lvls[label] = data['dte_lvl']
-                            if label == 'Daily': curr_p = data['price']
-                    
-                    # Store Result
-                    res_row = {
-                        'Symbol': symbol,
-                        'Current Price': curr_p,
-                        'M-Cap Category': mcap_cat,
-                        'Sector': sector_name,
-                    }
-                    
-                    if analysis_type == "Quality DTE (Filtered)":
-                        res_row['Metric'] = metric_val
-                        res_row['D_Gap%'] = gaps.get('Daily', 0)
-                        res_row['W_Gap%'] = gaps.get('Weekly', 0)
-                        res_row['M_Gap%'] = gaps.get('Monthly', 0)
-                        # Filter: At least one interval > 20%
-                        if any(v > 20 for v in gaps.values()):
-                            results.append(res_row)
-                    else:
-                        # Unfiltered: Add DTE Prices
-                        res_row.update({
-                            'D_Price': dte_lvls.get('Daily', 0),
-                            'D_Gap%': gaps.get('Daily', 0),
-                            'W_Price': dte_lvls.get('Weekly', 0),
-                            'W_Gap%': gaps.get('Weekly', 0),
-                            'M_Price': dte_lvls.get('Monthly', 0),
-                            'M_Gap%': gaps.get('Monthly', 0)
-                        })
-                        results.append(res_row)
+                # 2. Fetch Technicals
+                gaps, dte_lvls, curr_p = {}, {}, 0
+                for label, tv_int in {'Daily': Interval.in_daily, 'Weekly': Interval.in_weekly, 'Monthly': Interval.in_monthly}.items():
+                    hist = tv.get_hist(symbol=symbol, exchange='NSE', interval=tv_int, n_bars=100)
+                    data = calculate_dte_metrics(hist)
+                    if data:
+                        gaps[label] = data['gap']
+                        dte_lvls[label] = data['dte_lvl']
+                        if label == 'Daily': curr_p = data['price']
 
-            except Exception:
+                # 3. Combine Data into Row
+                results.append({
+                    'Symbol': symbol,
+                    'Current Price': curr_p,
+                    'Cap Category': mcap_cat,
+                    'Sector': sector,
+                    'ROE%': round(roe * 100, 2) if roe else 0,
+                    'ROA%': round(roa * 100, 2) if roa else 0,
+                    'Debt/Equity': round(debt_eq / 100, 2) if debt_eq else 0,
+                    'Op Margin%': round(op_margin * 100, 2) if op_margin else 0,
+                    'D_DTE_Price': dte_lvls.get('Daily', 0),
+                    'D_Gap%': gaps.get('Daily', 0),
+                    'W_DTE_Price': dte_lvls.get('Weekly', 0),
+                    'W_Gap%': gaps.get('Weekly', 0),
+                    'M_DTE_Price': dte_lvls.get('Monthly', 0),
+                    'M_Gap%': gaps.get('Monthly', 0)
+                })
+
+            except Exception as e:
+                # Skip stocks with errors but keep the app running
                 continue
+            
             progress_bar.progress((i + 1) / len(stock_list))
 
+        status_text.text("Analysis Complete!")
+        
         if results:
             final_df = pd.DataFrame(results)
             st.dataframe(final_df)
             
+            # Export to Excel
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                final_df.to_excel(writer, index=False)
-            st.download_button("📥 Download Report", output.getvalue(), "Stock_DTE_Report.xlsx")
+                final_df.to_excel(writer, index=False, sheet_name='Stock_Analysis')
+            
+            st.download_button(
+                label="📥 Download Full Report",
+                data=output.getvalue(),
+                file_name="Full_Stock_Analysis_Report.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
         else:
-            st.error("No results found. Check symbols or loosen filters.")
+            st.error("Could not fetch data for the symbols provided.")
