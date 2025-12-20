@@ -2,11 +2,10 @@ import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib
-import yfinance as yf
 from tvDatafeed import TvDatafeed, Interval
 import io
 from datetime import datetime
-import time
+import requests
 
 # Setup non-interactive plotting
 matplotlib.use('Agg')
@@ -22,9 +21,22 @@ if 'is_running' not in st.session_state:
     st.session_state.is_running = False
 
 st.title("🎯 Stock DTE Meter")
-#st.write("Sequential processing with auto-save. Use the buttons below to control the scan.")
+st.write("Technical Volume-Price Analysis. Auto-fetches NIFTY 500 if no file is uploaded.")
 
 # --- Helper Functions ---
+
+def get_nifty_500():
+    """Fetches the Nifty 500 stock list from NSE."""
+    url = "https://archives.nseindia.com/content/indices/ind_nifty500list.csv"
+    try:
+        # Use a user-agent to prevent blocking
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        response = requests.get(url, headers=headers)
+        df = pd.read_csv(io.StringIO(response.text))
+        return df['Symbol'].tolist()
+    except Exception as e:
+        st.error(f"Failed to fetch NIFTY 500: {e}")
+        return []
 
 def calculate_dte_metrics(df):
     try:
@@ -46,26 +58,33 @@ def calculate_dte_metrics(df):
         return {'gap': round(percent_gap, 2), 'price': round(current_price, 2), 'dte_lvl': round(dte_price, 2)}
     except: return None
 
-# --- UI Controls ---
+# --- Stock List Preparation ---
 
-uploaded_file = st.file_uploader("Upload 'stocks.xlsx'", type=["xlsx"])
+uploaded_file = st.file_uploader("Upload 'stocks.xlsx' (Optional)", type=["xlsx"])
 
 if uploaded_file:
     df_input = pd.read_excel(uploaded_file)
     stock_list = df_input['symbol'].tolist()
+else:
+    if st.checkbox("Use NIFTY 500 List", value=True):
+        stock_list = get_nifty_500()
+    else:
+        stock_list = []
+
+# --- UI Controls ---
+
+if stock_list:
     total_stocks = len(stock_list)
+    st.info(f"Ready to process {total_stocks} stocks.")
 
     col1, col2, col3 = st.columns(3)
-    
     with col1:
         if st.button("🚀 Start / Resume Scan"):
             st.session_state.is_running = True
-    
     with col2:
         if st.button("⏸️ Pause Scan"):
             st.session_state.is_running = False
             st.rerun()
-
     with col3:
         if st.button("🗑️ Reset Everything"):
             st.session_state.processed_results = []
@@ -82,21 +101,11 @@ if uploaded_file:
         while st.session_state.last_index < total_stocks and st.session_state.is_running:
             i = st.session_state.last_index
             symbol = stock_list[i]
-            status_text.text(f"Currently Analyzing: {symbol} ({i+1}/{total_stocks})")
+            status_text.text(f"Analyzing: {symbol} ({i+1}/{total_stocks})")
             
             try:
-                ticker = yf.Ticker(f"{symbol}.NS")
-                info = ticker.info
-                
-                # Fundamental Data
-                fcf = info.get('freeCashflow', 0) or 0
-                total_debt = info.get('totalDebt', 0) or 0
-                total_equity = info.get('totalStockholderEquity', 0) or info.get('bookValue', 0) * info.get('sharesOutstanding', 1)
-                invested_capital = total_debt + total_equity
-                croic = (fcf / invested_capital) if invested_capital > 0 else 0
-
-                # Technical Data
                 gaps, dte_lvls, curr_p = {}, {}, 0
+                # Process Daily, Weekly, Monthly
                 for label, tv_int in {'Daily': Interval.in_daily, 'Weekly': Interval.in_weekly, 'Monthly': Interval.in_monthly}.items():
                     hist = tv.get_hist(symbol=symbol, exchange='NSE', interval=tv_int, n_bars=100)
                     data = calculate_dte_metrics(hist)
@@ -105,28 +114,24 @@ if uploaded_file:
                         dte_lvls[label] = data['dte_lvl']
                         if label == 'Daily': curr_p = data['price']
 
-                # Append to persistent state with specific column ordering
+                # Clean output: Symbol + Prices + Gaps
                 st.session_state.processed_results.append({
                     'Symbol': symbol,
-                    'Sector': info.get('sector', 'N/A'),
-                    'Industry': info.get('industry', 'N/A'),
-                    'Current Price': curr_p, # Positioned before Book Price
-                    'Book Price': round(info.get('bookValue', 0) or 0, 2),
-                    'CROIC %': round(croic * 100, 2),
-                    'ROE%': round((info.get('returnOnEquity', 0) or 0) * 100, 2),
-                    'Debt/Equity': round((info.get('debtToEquity', 0) or 0) / 100, 2),
-                    'Op Margin%': round((info.get('operatingMargins', 0) or 0) * 100, 2),
-                    'D_DTE_Price': dte_lvls.get('Daily', 0), 'D_Gap%': gaps.get('Daily', 0),
-                    'W_DTE_Price': dte_lvls.get('Weekly', 0), 'W_Gap%': gaps.get('Weekly', 0),
-                    'M_DTE_Price': dte_lvls.get('Monthly', 0), 'M_Gap%': gaps.get('Monthly', 0)
+                    'Current Price': curr_p,
+                    'D_DTE_Price': dte_lvls.get('Daily', 0),
+                    'D_Gap %': gaps.get('Daily', 0),
+                    'W_DTE_Price': dte_lvls.get('Weekly', 0),
+                    'W_Gap %': gaps.get('Weekly', 0),
+                    'M_DTE_Price': dte_lvls.get('Monthly', 0),
+                    'M_Gap %': gaps.get('Monthly', 0)
                 })
-            except Exception:
+            except:
                 pass
             
             st.session_state.last_index += 1
             progress_bar.progress(st.session_state.last_index / total_stocks)
             
-            # Auto-refresh UI every 10 stocks to keep data visible and connection alive
+            # Refresh UI every 10 stocks for mobile stability
             if st.session_state.last_index % 10 == 0:
                 st.rerun()
 
@@ -134,29 +139,22 @@ if uploaded_file:
             st.session_state.is_running = False
             st.success("Analysis Complete!")
 
-    # --- Result Display & Excel Download ---
+    # --- Results & Export ---
     if st.session_state.processed_results:
         df_res = pd.DataFrame(st.session_state.processed_results)
-        st.write(f"### Results ({len(df_res)} stocks)")
         st.dataframe(df_res)
         
-        # Formatted Excel Export with Title Branding
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            df_res.to_excel(writer, index=False, sheet_name='DTE_Meter_Report')
+            df_res.to_excel(writer, index=False, sheet_name='DTE_Meter')
             workbook = writer.book
-            worksheet = writer.sheets['DTE_Meter_Report']
-            worksheet.freeze_panes(1, 1)
+            worksheet = writer.sheets['DTE_Meter']
+            worksheet.freeze_panes(1, 1) # Freeze top row and symbol
             
+            # Formatting
             header_fmt = workbook.add_format({'bold': True, 'bg_color': '#D7E4BC', 'border': 1})
             for col_num, value in enumerate(df_res.columns.values):
                 worksheet.write(0, col_num, value, header_fmt)
-            
-            worksheet.set_column('A:A', 15) # Symbol
-            worksheet.set_column('B:D', 20) # Sector, Industry, Price
-            worksheet.set_column('E:M', 15) # Metrics and Gaps
+            worksheet.set_column('A:H', 15)
 
-        # Filename based on Title
-        file_name_final = f"Stock_DTE_Meter_{datetime.now().strftime('%Y%m%d')}.xlsx"
-        
-        st.download_button("📥 Download Stock DTE Meter Report", output.getvalue(), file_name_final)
+        st.download_button("📥 Download Stock DTE Meter Report", output.getvalue(), f"Stock_DTE_Meter_{datetime.now().strftime('%Y%m%d')}.xlsx")
