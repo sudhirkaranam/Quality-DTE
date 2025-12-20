@@ -21,7 +21,7 @@ if 'is_running' not in st.session_state:
     st.session_state.is_running = False
 
 st.title("🎯 Stock DTE Meter")
-st.write("Technical Volume-Price Analysis. Auto-fetches NIFTY 500 if no file is uploaded.")
+st.write("Technical Volume-Price Analysis. Upload any Excel file with a 'Symbol' column.")
 
 # --- Helper Functions ---
 
@@ -29,11 +29,12 @@ def get_nifty_500():
     """Fetches the Nifty 500 stock list from NSE."""
     url = "https://archives.nseindia.com/content/indices/ind_nifty500list.csv"
     try:
-        # Use a user-agent to prevent blocking
         headers = {'User-Agent': 'Mozilla/5.0'}
         response = requests.get(url, headers=headers)
         df = pd.read_csv(io.StringIO(response.text))
-        return df['Symbol'].tolist()
+        # Look for symbol column case-insensitively
+        symbol_col = next((c for c in df.columns if c.lower() == 'symbol'), None)
+        return df[symbol_col].tolist() if symbol_col else []
     except Exception as e:
         st.error(f"Failed to fetch NIFTY 500: {e}")
         return []
@@ -60,16 +61,21 @@ def calculate_dte_metrics(df):
 
 # --- Stock List Preparation ---
 
-uploaded_file = st.file_uploader("Upload 'stocks.xlsx' (Optional)", type=["xlsx"])
+uploaded_file = st.file_uploader("Upload an Excel file (Optional)", type=["xlsx", "xls"])
 
+stock_list = []
 if uploaded_file:
     df_input = pd.read_excel(uploaded_file)
-    stock_list = df_input['symbol'].tolist()
+    # Find symbol column case-insensitively
+    symbol_col = next((c for c in df_input.columns if c.lower() == 'symbol'), None)
+    
+    if symbol_col:
+        stock_list = df_input[symbol_col].dropna().astype(str).tolist()
+    else:
+        st.error("Error: Could not find a column named 'Symbol' in the uploaded file.")
 else:
     if st.checkbox("Use NIFTY 500 List", value=True):
         stock_list = get_nifty_500()
-    else:
-        stock_list = []
 
 # --- UI Controls ---
 
@@ -100,12 +106,11 @@ if stock_list:
         
         while st.session_state.last_index < total_stocks and st.session_state.is_running:
             i = st.session_state.last_index
-            symbol = stock_list[i]
+            symbol = stock_list[i].strip().upper()
             status_text.text(f"Analyzing: {symbol} ({i+1}/{total_stocks})")
             
             try:
                 gaps, dte_lvls, curr_p = {}, {}, 0
-                # Process Daily, Weekly, Monthly
                 for label, tv_int in {'Daily': Interval.in_daily, 'Weekly': Interval.in_weekly, 'Monthly': Interval.in_monthly}.items():
                     hist = tv.get_hist(symbol=symbol, exchange='NSE', interval=tv_int, n_bars=100)
                     data = calculate_dte_metrics(hist)
@@ -114,7 +119,6 @@ if stock_list:
                         dte_lvls[label] = data['dte_lvl']
                         if label == 'Daily': curr_p = data['price']
 
-                # Clean output: Symbol + Prices + Gaps
                 st.session_state.processed_results.append({
                     'Symbol': symbol,
                     'Current Price': curr_p,
@@ -131,7 +135,6 @@ if stock_list:
             st.session_state.last_index += 1
             progress_bar.progress(st.session_state.last_index / total_stocks)
             
-            # Refresh UI every 10 stocks for mobile stability
             if st.session_state.last_index % 10 == 0:
                 st.rerun()
 
@@ -149,12 +152,15 @@ if stock_list:
             df_res.to_excel(writer, index=False, sheet_name='DTE_Meter')
             workbook = writer.book
             worksheet = writer.sheets['DTE_Meter']
-            worksheet.freeze_panes(1, 1) # Freeze top row and symbol
+            worksheet.freeze_panes(1, 1)
             
-            # Formatting
             header_fmt = workbook.add_format({'bold': True, 'bg_color': '#D7E4BC', 'border': 1})
             for col_num, value in enumerate(df_res.columns.values):
                 worksheet.write(0, col_num, value, header_fmt)
             worksheet.set_column('A:H', 15)
 
-        st.download_button("📥 Download Stock DTE Meter Report", output.getvalue(), f"Stock_DTE_Meter_{datetime.now().strftime('%Y%m%d')}.xlsx")
+        st.download_button(
+            "📥 Download Stock DTE Meter Report", 
+            output.getvalue(), 
+            f"Stock_DTE_Meter_{datetime.now().strftime('%Y%m%d')}.xlsx"
+        )
