@@ -5,34 +5,47 @@ import matplotlib
 import yfinance as yf
 from tvDatafeed import TvDatafeed, Interval
 import io
+import time
 
 # Setup non-interactive plotting
 matplotlib.use('Agg')
 
-st.set_page_config(page_title="Quality Stock DTE Analyzer", layout="wide")
+st.set_page_config(page_title="High-Quality Stock DTE Analyzer", layout="wide")
 
 st.title("🎯 High-Quality Stock DTE Analyzer")
-st.write("Upload your stock list, and I'll find stocks with a **20%+ Visual Gap** and **Strong Moat**.")
+st.write("Finds stocks with a **20%+ Visual Volume Gap** and **Strong Moat** across multiple intervals.")
 
 # --- Functions ---
 
 def is_quality_stock(symbol):
-    """Checks for ROE > 15%, Debt/Equity < 1, and Margins > 10%."""
+    """
+    Sector-specific quality check:
+    - Financials: ROA > 1%, Operating Margin > 15%
+    - Others: ROE > 15%, Debt/Equity < 1, Operating Margin > 10%
+    """
     try:
         ticker = yf.Ticker(f"{symbol}.NS")
         info = ticker.info
-        roe = info.get('returnOnEquity', 0) or 0
-        debt = (info.get('debtToEquity', 100) or 100) / 100
+        
+        sector = info.get('sector', 'Unknown')
         margin = info.get('operatingMargins', 0) or 0
         
-        if roe > 0.15 and debt < 1.0 and margin > 0.10:
-            return True, roe, margin
-        return False, roe, margin
-    except:
-        return False, 0, 0
+        if sector in ['Financial Services', 'Financial']:
+            roa = info.get('returnOnAssets', 0) or 0
+            if roa > 0.01 and margin > 0.15:
+                return True, f"ROA: {round(roa*100, 2)}%", sector
+        else:
+            roe = info.get('returnOnEquity', 0) or 0
+            d_e = (info.get('debtToEquity', 100) or 100) / 100
+            if roe > 0.15 and d_e < 1.0 and margin > 0.10:
+                return True, f"ROE: {round(roe*100, 2)}%", sector
+                
+        return False, None, None
+    except Exception:
+        return False, None, None
 
 def calculate_dte_metrics(df):
-    """Logic to find the visual price peak relative to volume peak."""
+    """Calculates DTE Visual Gap and fetches Current Price."""
     try:
         if df is None or df.empty or len(df) < 5: return None
         current_price = df['close'].iloc[-1]
@@ -55,13 +68,13 @@ def calculate_dte_metrics(df):
         dte_price = p_min + (rel_height * (p_max - p_min))
         percent_gap = ((dte_price - current_price) / current_price) * 100
         
-        return round(percent_gap, 2)
-    except:
+        return {'gap': round(percent_gap, 2), 'price': round(current_price, 2)}
+    except Exception:
         return None
 
 # --- UI Sidebar & Upload ---
 
-uploaded_file = st.file_uploader("Upload 'stocks.xlsx' (must have a 'symbol' column)", type=["xlsx"])
+uploaded_file = st.file_uploader("Upload 'stocks.xlsx' (column 'symbol' required)", type=["xlsx"])
 
 if uploaded_file:
     df_input = pd.read_excel(uploaded_file)
@@ -79,45 +92,55 @@ if uploaded_file:
             for i, symbol in enumerate(stock_list):
                 status_text.text(f"Analyzing {symbol} ({i+1}/{len(stock_list)})")
                 
-                # 1. Fundamental Moat Check
-                is_qual, roe, margin = is_quality_stock(symbol)
-                if is_qual:
-                    gaps = {}
-                    valid = True
+                try:
+                    # 1. Fundamental Moat Check
+                    is_qual, metric_val, sector_name = is_quality_stock(symbol)
                     
-                    # 2. Multi-Interval DTE Check
-                    for label, tv_int in {'Daily': Interval.in_daily, 'Weekly': Interval.in_weekly, 'Monthly': Interval.in_monthly}.items():
-                        hist = tv.get_hist(symbol=symbol, exchange='NSE', interval=tv_int, n_bars=100)
-                        gap = calculate_dte_metrics(hist)
+                    if is_qual:
+                        gaps = {}
+                        current_price_final = 0
+                        valid = True
                         
-                        if gap is not None and gap > 20:
-                            gaps[label] = gap
-                        else:
-                            valid = False
-                            break
-                    
-                    if valid:
-                        results.append({
-                            'Symbol': symbol,
-                            'ROE': f"{round(roe*100, 2)}%",
-                            'Margin': f"{round(margin*100, 2)}%",
-                            'Daily_Gap_%': gaps['Daily'],
-                            'Weekly_Gap_%': gaps['Weekly'],
-                            'Monthly_Gap_%': gaps['Monthly']
-                        })
+                        # 2. Multi-Interval DTE Check
+                        intervals = {'Daily': Interval.in_daily, 'Weekly': Interval.in_weekly, 'Monthly': Interval.in_monthly}
+                        for label, tv_int in intervals.items():
+                            hist = tv.get_hist(symbol=symbol, exchange='NSE', interval=tv_int, n_bars=100)
+                            data = calculate_dte_metrics(hist)
+                            
+                            if data and data['gap'] > 20:
+                                gaps[label] = data['gap']
+                                if label == 'Daily': current_price_final = data['price']
+                            else:
+                                valid = False
+                                break
+                        
+                        if valid:
+                            results.append({
+                                'Symbol': symbol,
+                                'Current Price': current_price_final,
+                                'Sector': sector_name,
+                                'Quality Metric': metric_val,
+                                'Daily_Gap_%': gaps['Daily'],
+                                'Weekly_Gap_%': gaps['Weekly'],
+                                'Monthly_Gap_%': gaps['Monthly']
+                            })
+                except Exception as e:
+                    st.warning(f"Skipped {symbol} due to an error.")
+                    continue
                 
                 progress_bar.progress((i + 1) / len(stock_list))
             
             # --- Output Results ---
+            status_text.text("Analysis Complete!")
             if results:
                 final_df = pd.DataFrame(results)
-                st.success(f"Found {len(results)} Quality Stocks!")
+                st.success(f"Found {len(results)} stocks matching criteria!")
                 st.dataframe(final_df)
                 
-                # Export to Excel in Memory
+                # Export to Excel
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                    final_df.to_excel(writer, index=False, sheet_name='Filtered_Stocks')
+                    final_df.to_excel(writer, index=False, sheet_name='High_Quality_DTE')
                 
                 st.download_button(
                     label="📥 Download Excel Report",
