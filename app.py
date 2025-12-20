@@ -11,7 +11,7 @@ import time
 # Setup non-interactive plotting
 matplotlib.use('Agg')
 
-st.set_page_config(page_title="Stable Stock Analyzer", layout="wide")
+st.set_page_config(page_title="Stock DTE Meter", layout="wide")
 
 # --- Initialize Session State ---
 if 'processed_results' not in st.session_state:
@@ -21,8 +21,7 @@ if 'last_index' not in st.session_state:
 if 'is_running' not in st.session_state:
     st.session_state.is_running = False
 
-st.title("🎯 Stable Stock Analyzer")
-st.write("Sequential processing with auto-save. Use the buttons below to control the scan.")
+st.title("🎯 Stock DTE Meter")
 
 # --- Helper Functions ---
 
@@ -158,4 +157,4 @@ if uploaded_file:
             worksheet.set_column('A:A', 15)
             worksheet.set_column('B:G', 15)
 
-        st.download_button("📥 Download Excel Report", output.getvalue(), f"Stock_Report_{datetime.now().strftime('%Y%m%d')}.xlsx")
+        st.download_button("📥 Download Excel Report", output.getvalue(), f"Stock_DTE_{datetime.now().strftime('%Y%m%d')}.xlsx")
