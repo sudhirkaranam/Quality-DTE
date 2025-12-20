@@ -22,6 +22,7 @@ if 'is_running' not in st.session_state:
     st.session_state.is_running = False
 
 st.title("🎯 Stock DTE Meter")
+#st.write("Sequential processing with auto-save. Use the buttons below to control the scan.")
 
 # --- Helper Functions ---
 
@@ -78,7 +79,6 @@ if uploaded_file:
         progress_bar = st.progress(st.session_state.last_index / total_stocks)
         status_text = st.empty()
         
-        # We process in a loop without st.rerun() inside to keep it moving
         while st.session_state.last_index < total_stocks and st.session_state.is_running:
             i = st.session_state.last_index
             symbol = stock_list[i]
@@ -105,12 +105,12 @@ if uploaded_file:
                         dte_lvls[label] = data['dte_lvl']
                         if label == 'Daily': curr_p = data['price']
 
-                # Append to persistent state
+                # Append to persistent state with specific column ordering
                 st.session_state.processed_results.append({
                     'Symbol': symbol,
-                    'Current Price': curr_p,
                     'Sector': info.get('sector', 'N/A'),
                     'Industry': info.get('industry', 'N/A'),
+                    'Current Price': curr_p, # Positioned before Book Price
                     'Book Price': round(info.get('bookValue', 0) or 0, 2),
                     'CROIC %': round(croic * 100, 2),
                     'ROE%': round((info.get('returnOnEquity', 0) or 0) * 100, 2),
@@ -123,11 +123,10 @@ if uploaded_file:
             except Exception:
                 pass
             
-            # Increment and update UI
             st.session_state.last_index += 1
             progress_bar.progress(st.session_state.last_index / total_stocks)
             
-            # Periodic UI refresh to keep browser alive without stopping the loop
+            # Auto-refresh UI every 10 stocks to keep data visible and connection alive
             if st.session_state.last_index % 10 == 0:
                 st.rerun()
 
@@ -141,20 +140,23 @@ if uploaded_file:
         st.write(f"### Results ({len(df_res)} stocks)")
         st.dataframe(df_res)
         
-        # Formatted Excel Export
+        # Formatted Excel Export with Title Branding
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            df_res.to_excel(writer, index=False, sheet_name='Report')
+            df_res.to_excel(writer, index=False, sheet_name='DTE_Meter_Report')
             workbook = writer.book
-            worksheet = writer.sheets['Report']
+            worksheet = writer.sheets['DTE_Meter_Report']
             worksheet.freeze_panes(1, 1)
             
-            # Formatting
             header_fmt = workbook.add_format({'bold': True, 'bg_color': '#D7E4BC', 'border': 1})
             for col_num, value in enumerate(df_res.columns.values):
                 worksheet.write(0, col_num, value, header_fmt)
             
-            worksheet.set_column('A:A', 15)
-            worksheet.set_column('B:G', 15)
+            worksheet.set_column('A:A', 15) # Symbol
+            worksheet.set_column('B:D', 20) # Sector, Industry, Price
+            worksheet.set_column('E:M', 15) # Metrics and Gaps
 
-        st.download_button("📥 Download Excel Report", output.getvalue(), f"Stock_DTE_{datetime.now().strftime('%Y%m%d')}.xlsx")
+        # Filename based on Title
+        file_name_final = f"Stock_DTE_Meter_{datetime.now().strftime('%Y%m%d')}.xlsx"
+        
+        st.download_button("📥 Download Stock DTE Meter Report", output.getvalue(), file_name_final)
