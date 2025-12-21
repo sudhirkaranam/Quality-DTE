@@ -72,6 +72,7 @@ if not st.session_state.nifty_500_list:
     st.session_state.nifty_500_list = get_nifty_500()
 
 st.title("🎯 Stock DTE Meter")
+st.info("Timeframe Mapping: Daily (4H) | Weekly (1D) | Monthly (1W)")
 
 # --- SECTION 1: QUICK LOOKUP ---
 st.subheader("🔍 Single Stock Quick Lookup")
@@ -82,7 +83,11 @@ if quick_sym:
     sector = ticker.info.get('sector', 'N/A')
     q_res = []
     is_n500 = "Yes" if quick_sym in st.session_state.nifty_500_list else "No"
-    for lbl, tint in {'Daily': Interval.in_daily, 'Weekly': Interval.in_weekly, 'Monthly': Interval.in_monthly}.items():
+    
+    # Mapping requested timeframes to titles
+    mapping = {'Daily': Interval.in_4_hour, 'Weekly': Interval.in_daily, 'Monthly': Interval.in_weekly}
+    
+    for lbl, tint in mapping.items():
         hist = tv_quick.get_hist(symbol=quick_sym, exchange='NSE', interval=tint, n_bars=100)
         data = calculate_dte_metrics(hist)
         if data:
@@ -118,6 +123,10 @@ if stock_list:
     if st.session_state.is_running and st.session_state.last_index < len(stock_list):
         tv = TvDatafeed()
         progress_bar = st.progress(st.session_state.last_index / len(stock_list))
+        
+        # Internal processing map
+        proc_map = {'D': Interval.in_4_hour, 'W': Interval.in_daily, 'M': Interval.in_weekly}
+        
         while st.session_state.last_index < len(stock_list) and st.session_state.is_running:
             idx = st.session_state.last_index
             sym = stock_list[idx].strip().upper()
@@ -126,14 +135,15 @@ if stock_list:
                 ticker = yf.Ticker(f"{sym}.NS")
                 sector = ticker.info.get('sector', 'N/A')
                 is_n500 = "Yes" if sym in st.session_state.nifty_500_list else "No"
-                for lbl, tint in {'D': Interval.in_daily, 'W': Interval.in_weekly, 'M': Interval.in_monthly}.items():
+                
+                for lbl, tint in proc_map.items():
                     hist = tv.get_hist(symbol=sym, exchange='NSE', interval=tint, n_bars=100)
                     d = calculate_dte_metrics(hist)
                     if d:
                         metrics[f'{lbl}_Price'] = d['dte_lvl']
                         metrics[f'{lbl}_Gap%'] = d['gap']
                         metrics[f'{lbl}_RSI'] = d['rsi']
-                        if lbl == 'D': cp = d['price']
+                        if lbl == 'W': cp = d['price'] # Using 1D as current price reference
 
                 st.session_state.processed_results.append({
                     'Symbol': sym, 'Sector': sector, 'Nifty 500': is_n500, 'Price': cp,
