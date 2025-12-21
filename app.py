@@ -72,7 +72,7 @@ if not st.session_state.nifty_500_list:
     st.session_state.nifty_500_list = get_nifty_500()
 
 st.title("🎯 Stock DTE Meter")
-st.info("Timeframe Mapping: Daily (4H) | Weekly (1D) | Monthly (1W)")
+###st.info("Timeframe Mapping: Daily (4H) | Weekly (1D) | Monthly (1W)")
 
 # --- SECTION 1: QUICK LOOKUP ---
 st.subheader("🔍 Single Stock Quick Lookup")
