@@ -5,13 +5,14 @@ import matplotlib
 from tvDatafeed import TvDatafeed, Interval
 import yfinance as yf
 import io
+import time
 from datetime import datetime
 import requests
 
 # Setup non-interactive plotting
 matplotlib.use('Agg')
 
-st.set_page_config(page_title="Stock DTE Meter", layout="wide")
+st.set_page_config(page_title="Stock DTE Meter SK", layout="wide")
 
 # --- Initialize Session State ---
 if 'processed_results' not in st.session_state:
@@ -36,12 +37,24 @@ def get_nifty_500():
     except Exception:
         return []
 
+def search_nse_symbols(entry):
+    """Fetches a list of possible NSE symbols based on user entry."""
+    try:
+        search = yf.Search(entry, max_results=8)
+        # Filter for NSE (National Stock Exchange of India) specifically
+        results = [
+            {"label": f"{t['quotesummary']['longName']} ({t['symbol']})", "symbol": t['symbol'].replace('.NS', '')}
+            for t in search.tickers if t['symbol'].endswith('.NS')
+        ]
+        return results
+    except:
+        return []
+
 def calculate_dte_metrics(df):
     try:
         if df is None or df.empty or len(df) < 15: return None
         current_price = df['close'].iloc[-1]
         
-        # Determine DTE level by scaling max volume peak against price range
         fig, ax1 = plt.subplots()
         ax1.plot(df.index, df['close'])
         ax2 = ax1.twinx()
@@ -60,34 +73,45 @@ def calculate_dte_metrics(df):
         return {'gap': round(percent_gap, 2), 'price': round(current_price, 2), 'dte_lvl': round(dte_price, 2)}
     except: return None
 
-# Fetch Nifty 500 once
 if not st.session_state.nifty_500_list:
     st.session_state.nifty_500_list = get_nifty_500()
 
 st.title("📊 Stock DTE Meter")
-st.caption("Analyzing Price/Volume Equilibrium for Daily (1D) and Weekly (1W) timeframes.")
 
-# --- SECTION 1: QUICK LOOKUP ---
-st.subheader("🔍 Single Stock Quick Lookup")
-quick_sym = st.text_input("Enter Symbol (e.g., RELIANCE):").strip().upper()
-if quick_sym:
-    tv_quick = TvDatafeed()
-    ticker = yf.Ticker(f"{quick_sym}.NS")
-    sector = ticker.info.get('sector', 'N/A')
-    q_res = []
-    is_n500 = "Yes" if quick_sym in st.session_state.nifty_500_list else "No"
+# --- SECTION 1: SEARCH & QUICK LOOKUP ---
+st.subheader("🔍 Single Stock Search")
+user_input = st.text_input("Search Company Name (e.g., 'Tata', 'HDFC', 'Reliance'):").strip()
+
+if user_input:
+    matches = search_nse_symbols(user_input)
     
-    # Mapping to 1D and 1W as requested
-    mapping = {'Daily (1D)': Interval.in_daily, 'Weekly (1W)': Interval.in_weekly}
-    
-    for lbl, tint in mapping.items():
-        hist = tv_quick.get_hist(symbol=quick_sym, exchange='NSE', interval=tint, n_bars=100)
-        data = calculate_dte_metrics(hist)
-        if data:
-            q_res.append({"Interval": lbl, "Price": data['price'], "DTE Price": data['dte_lvl'], "Gap%": data['gap']})
-    if q_res:
-        st.write(f"**Sector:** {sector} | **NIFTY 500:** {is_n500}")
-        st.table(pd.DataFrame(q_res))
+    if matches:
+        # Create a dropdown for the user to select the correct stock
+        options = {m['label']: m['symbol'] for m in matches}
+        selected_label = st.selectbox("Select the correct company:", options.keys())
+        quick_sym = options[selected_label]
+        
+        if st.button("Analyze Selected Stock"):
+            with st.status(f"Fetching data for {quick_sym}...", expanded=True) as status:
+                tv_quick = TvDatafeed()
+                ticker = yf.Ticker(f"{quick_sym}.NS")
+                sector = ticker.info.get('sector', 'N/A')
+                q_res = []
+                
+                mapping = {'Daily (1D)': Interval.in_daily, 'Weekly (1W)': Interval.in_weekly}
+                
+                for lbl, tint in mapping.items():
+                    hist = tv_quick.get_hist(symbol=quick_sym, exchange='NSE', interval=tint, n_bars=100)
+                    data = calculate_dte_metrics(hist)
+                    if data:
+                        q_res.append({"Interval": lbl, "Price": data['price'], "DTE Price": data['dte_lvl'], "Gap%": data['gap']})
+                status.update(label="Analysis Complete!", state="complete")
+
+            if q_res:
+                st.write(f"**Sector:** {sector} | **Ticker:** {quick_sym}")
+                st.table(pd.DataFrame(q_res))
+    else:
+        st.warning("No matching NSE symbols found. Try refining your search terms.")
 
 st.divider()
 
@@ -103,7 +127,7 @@ else:
     if st.checkbox("Use NIFTY 500 Index"): stock_list = st.session_state.nifty_500_list
 
 if stock_list:
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     with c1:
         if st.button("🚀 Start/Resume"): st.session_state.is_running = True
     with c2:
@@ -116,18 +140,26 @@ if stock_list:
     if st.session_state.is_running and st.session_state.last_index < len(stock_list):
         tv = TvDatafeed()
         progress_bar = st.progress(st.session_state.last_index / len(stock_list))
+        status_text = st.empty()
         
-        # Mapping for processing
         proc_map = {'D': Interval.in_daily, 'W': Interval.in_weekly}
+        start_time = time.time()
         
         while st.session_state.last_index < len(stock_list) and st.session_state.is_running:
             idx = st.session_state.last_index
             sym = stock_list[idx].strip().upper()
+            
+            # Time calculation
+            elapsed = time.time() - start_time
+            processed = idx + 1
+            avg_time = elapsed / processed if processed > 0 else 0
+            remaining = avg_time * (len(stock_list) - processed)
+            status_text.text(f"Scanning {sym}... Est. time remaining: {int(remaining // 60)}m {int(remaining % 60)}s")
+            
             try:
                 metrics = {}
                 ticker = yf.Ticker(f"{sym}.NS")
                 sector = ticker.info.get('sector', 'N/A')
-                is_n500 = "Yes" if sym in st.session_state.nifty_500_list else "No"
                 cp = 0
                 
                 for lbl, tint in proc_map.items():
@@ -139,42 +171,27 @@ if stock_list:
                         cp = d['price']
 
                 st.session_state.processed_results.append({
-                    'Symbol': sym, 'Sector': sector, 'Nifty 500': is_n500, 'Price': cp,
+                    'Symbol': sym, 'Sector': sector, 'Price': cp,
                     'D_DTE': metrics.get('D_Price', 0), 'D_Gap%': metrics.get('D_Gap%', 0),
                     'W_DTE': metrics.get('W_Price', 0), 'W_Gap%': metrics.get('W_Gap%', 0)
                 })
             except: pass
+            
             st.session_state.last_index += 1
             progress_bar.progress(st.session_state.last_index / len(stock_list))
-            if st.session_state.last_index % 10 == 0: st.rerun()
+            if st.session_state.last_index % 5 == 0: st.rerun()
 
-    # --- RESULTS DISPLAY ---
     if st.session_state.processed_results:
         df_res = pd.DataFrame(st.session_state.processed_results)
         
-        # 1. Top 10 Highest Gaps (Weekly)
         st.subheader("🔥 Top 10 Highest Weekly Gaps")
         top_10 = df_res.nlargest(10, 'W_Gap%')[['Symbol', 'Sector', 'Price', 'W_DTE', 'W_Gap%']]
         st.dataframe(top_10, use_container_width=True)
         
-        # 2. Full Data Table
-        st.subheader("📋 Full Scan Results")
+        st.subheader("📋 All Results")
         st.dataframe(df_res, use_container_width=True)
         
-        # 3. Download Options
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             df_res.to_excel(writer, index=False, sheet_name='DTE_Report')
-            workbook, worksheet = writer.book, writer.sheets['DTE_Report']
-            worksheet.freeze_panes(1, 1)
-            header_fmt = workbook.add_format({'bold': True, 'bg_color': '#D7E4BC', 'border': 1})
-            for col_num, val in enumerate(df_res.columns.values):
-                worksheet.write(0, col_num, val, header_fmt)
-            worksheet.set_column('A:H', 16)
-        
-        st.download_button(
-            label="💾 Download Full Report (Excel)",
-            data=output.getvalue(),
-            file_name=f"DTE_Scanner_{datetime.now().strftime('%Y%m%d')}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+        st.download_button("💾 Download Full Report", output.getvalue(), f"DTE_Report_{datetime.now().strftime('%Y%m%d')}.xlsx")
