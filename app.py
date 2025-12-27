@@ -36,19 +36,12 @@ def get_nifty_500():
     except Exception:
         return []
 
-def calculate_rsi(series, period=14):
-    delta = series.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-    rs = gain / loss
-    return round(100 - (100 / (1 + rs)).iloc[-1], 2)
-
 def calculate_dte_metrics(df):
     try:
         if df is None or df.empty or len(df) < 15: return None
         current_price = df['close'].iloc[-1]
-        rsi_val = calculate_rsi(df['close'])
         
+        # Plotting logic to determine DTE level
         fig, ax1 = plt.subplots()
         ax1.plot(df.index, df['close'])
         ax2 = ax1.twinx()
@@ -64,15 +57,14 @@ def calculate_dte_metrics(df):
         dte_price = p_min + (rel_height * (p_max - p_min))
         percent_gap = ((dte_price - current_price) / current_price) * 100
         
-        return {'gap': round(percent_gap, 2), 'price': round(current_price, 2), 'dte_lvl': round(dte_price, 2), 'rsi': rsi_val}
+        return {'gap': round(percent_gap, 2), 'price': round(current_price, 2), 'dte_lvl': round(dte_price, 2)}
     except: return None
 
 # Fetch Nifty 500 once
 if not st.session_state.nifty_500_list:
     st.session_state.nifty_500_list = get_nifty_500()
 
-st.title("🎯 Stock DTE Meter")
-###st.info("Timeframe Mapping: Daily (4H) | Weekly (1D) | Monthly (1W)")
+st.title("📊 Stock DTE Meter")
 
 # --- SECTION 1: QUICK LOOKUP ---
 st.subheader("🔍 Single Stock Quick Lookup")
@@ -84,14 +76,14 @@ if quick_sym:
     q_res = []
     is_n500 = "Yes" if quick_sym in st.session_state.nifty_500_list else "No"
     
-    # Mapping requested timeframes to titles
-    mapping = {'Daily': Interval.in_4_hour, 'Weekly': Interval.in_daily, 'Monthly': Interval.in_weekly}
+    # Mapping Daily and Weekly intervals only
+    mapping = {'Daily': Interval.in_4_hour, 'Weekly': Interval.in_daily}
     
     for lbl, tint in mapping.items():
         hist = tv_quick.get_hist(symbol=quick_sym, exchange='NSE', interval=tint, n_bars=100)
         data = calculate_dte_metrics(hist)
         if data:
-            q_res.append({"Interval": lbl, "Price": data['price'], "DTE Price": data['dte_lvl'], "Gap%": data['gap'], "RSI": data['rsi']})
+            q_res.append({"Interval": lbl, "Price": data['price'], "DTE Price": data['dte_lvl'], "Gap%": data['gap']})
     if q_res:
         st.write(f"**Sector:** {sector} | **NIFTY 500:** {is_n500}")
         st.table(pd.DataFrame(q_res))
@@ -99,7 +91,7 @@ if quick_sym:
 st.divider()
 
 # --- SECTION 2: BATCH SCANNER ---
-st.subheader("📂 Batch Scanner")
+st.subheader("📑 Batch Scanner")
 uploaded_file = st.file_uploader("Upload Excel", type=["xlsx", "xls"])
 stock_list = []
 if uploaded_file:
@@ -124,8 +116,8 @@ if stock_list:
         tv = TvDatafeed()
         progress_bar = st.progress(st.session_state.last_index / len(stock_list))
         
-        # Internal processing map
-        proc_map = {'D': Interval.in_4_hour, 'W': Interval.in_daily, 'M': Interval.in_weekly}
+        # Mapping D (4H) and W (1D) only
+        proc_map = {'D': Interval.in_4_hour, 'W': Interval.in_daily}
         
         while st.session_state.last_index < len(stock_list) and st.session_state.is_running:
             idx = st.session_state.last_index
@@ -135,6 +127,7 @@ if stock_list:
                 ticker = yf.Ticker(f"{sym}.NS")
                 sector = ticker.info.get('sector', 'N/A')
                 is_n500 = "Yes" if sym in st.session_state.nifty_500_list else "No"
+                cp = 0
                 
                 for lbl, tint in proc_map.items():
                     hist = tv.get_hist(symbol=sym, exchange='NSE', interval=tint, n_bars=100)
@@ -142,14 +135,12 @@ if stock_list:
                     if d:
                         metrics[f'{lbl}_Price'] = d['dte_lvl']
                         metrics[f'{lbl}_Gap%'] = d['gap']
-                        metrics[f'{lbl}_RSI'] = d['rsi']
-                        if lbl == 'W': cp = d['price'] # Using 1D as current price reference
+                        cp = d['price']
 
                 st.session_state.processed_results.append({
                     'Symbol': sym, 'Sector': sector, 'Nifty 500': is_n500, 'Price': cp,
-                    'D_DTE': metrics.get('D_Price', 0), 'D_Gap%': metrics.get('D_Gap%', 0), 'D_RSI': metrics.get('D_RSI', 0),
-                    'W_DTE': metrics.get('W_Price', 0), 'W_Gap%': metrics.get('W_Gap%', 0), 'W_RSI': metrics.get('W_RSI', 0),
-                    'M_DTE': metrics.get('M_Price', 0), 'M_Gap%': metrics.get('M_Gap%', 0), 'M_RSI': metrics.get('M_RSI', 0)
+                    'D_DTE': metrics.get('D_Price', 0), 'D_Gap%': metrics.get('D_Gap%', 0),
+                    'W_DTE': metrics.get('W_Price', 0), 'W_Gap%': metrics.get('W_Gap%', 0)
                 })
             except: pass
             st.session_state.last_index += 1
@@ -167,5 +158,5 @@ if stock_list:
             header_fmt = workbook.add_format({'bold': True, 'bg_color': '#D7E4BC', 'border': 1})
             for col_num, val in enumerate(df_res.columns.values):
                 worksheet.write(0, col_num, val, header_fmt)
-            worksheet.set_column('A:M', 16)
-        st.download_button("📥 Download Report", output.getvalue(), f"Stock_DTE_Meter_{datetime.now().strftime('%Y%m%d')}.xlsx")
+            worksheet.set_column('A:H', 16)
+        st.download_button("💾 Download Report", output.getvalue(), f"Stock_DTE_Meter_{datetime.now().strftime('%Y%m%d')}.xlsx")
