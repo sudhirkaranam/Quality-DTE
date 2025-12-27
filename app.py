@@ -40,11 +40,9 @@ def fetch_nse_master_data():
 
 def get_industry_hybrid(sym, master_df):
     """Priority 1: NSE Master List | Priority 2: Yahoo Finance"""
-    # Try NSE first
     if not master_df.empty and sym in master_df['SYMBOL'].values:
         return master_df[master_df['SYMBOL'] == sym]['INDUSTRY'].values[0]
     
-    # Fallback to Yahoo Finance
     try:
         ticker = yf.Ticker(f"{sym}.NS")
         return ticker.info.get('sector', 'N/A')
@@ -56,7 +54,6 @@ def calculate_dte_metrics(df):
         if df is None or df.empty or len(df) < 15: return None
         current_price = df['close'].iloc[-1]
         
-        # Determine DTE level by scaling max volume peak against price range
         fig, ax1 = plt.subplots()
         ax1.plot(df.index, df['close'])
         ax2 = ax1.twinx()
@@ -87,6 +84,7 @@ quick_sym = st.text_input("Enter NSE Symbol (e.g., RELIANCE):").strip().upper()
 
 if quick_sym:
     industry = get_industry_hybrid(quick_sym, st.session_state.nifty_data_df)
+    is_n500 = "Yes" if not st.session_state.nifty_data_df.empty and quick_sym in st.session_state.nifty_data_df['SYMBOL'].values else "No"
     
     tv_quick = TvDatafeed()
     q_res = []
@@ -100,7 +98,9 @@ if quick_sym:
                 q_res.append({"Interval": lbl, "Price": data['price'], "DTE Price": data['dte_lvl'], "Gap%": data['gap']})
     
     if q_res:
-        st.write(f"**Industry/Sector:** {industry}")
+        c1, c2 = st.columns(2)
+        c1.metric("Industry/Sector", industry)
+        c2.metric("NIFTY 500 Member", is_n500)
         st.table(pd.DataFrame(q_res))
     else:
         st.error("No data found for this symbol.")
@@ -121,12 +121,12 @@ else:
         stock_list = st.session_state.nifty_data_df['SYMBOL'].tolist() if not st.session_state.nifty_data_df.empty else []
 
 if stock_list:
-    c1, c2, c3 = st.columns(3)
-    with c1:
+    col1, col2, col3 = st.columns(3)
+    with col1:
         if st.button("🚀 Start/Resume"): st.session_state.is_running = True
-    with c2:
+    with col2:
         if st.button("Pause"): st.session_state.is_running = False
-    with c3:
+    with col3:
         if st.button("Reset Scanner"):
             st.session_state.processed_results = []; st.session_state.last_index = 0
             st.session_state.is_running = False; st.rerun()
@@ -134,11 +134,14 @@ if stock_list:
     if st.session_state.processed_results:
         df_res = pd.DataFrame(st.session_state.processed_results)
         st.subheader("📋 Scanner Results")
+        
+        # Displaying with a simple highlight for Nifty500 members
         st.dataframe(df_res, use_container_width=True)
         
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             df_res.to_excel(writer, index=False, sheet_name='DTE_Report')
+            # The Excel file will now include the 'In_Nifty500' column
         st.download_button("💾 Download Full Report", output.getvalue(), f"DTE_Report_{datetime.now().strftime('%Y%m%d')}.xlsx")
 
     if st.session_state.is_running and st.session_state.last_index < len(stock_list):
@@ -147,12 +150,16 @@ if stock_list:
         
         proc_map = {'D': Interval.in_daily, 'W': Interval.in_weekly}
         master = st.session_state.nifty_data_df
+        nifty500_set = set(master['SYMBOL'].tolist()) if not master.empty else set()
         
         while st.session_state.last_index < len(stock_list) and st.session_state.is_running:
             idx = st.session_state.last_index
             sym = stock_list[idx].strip().upper()
             
-            # Hybrid Industry Retrieval
+            # 1. Identify if in NIFTY 500
+            is_n500 = "Yes" if sym in nifty500_set else "No"
+            
+            # 2. Get Industry
             industry = get_industry_hybrid(sym, master)
             
             try:
@@ -168,6 +175,7 @@ if stock_list:
                 
                 st.session_state.processed_results.append({
                     'Symbol': sym, 
+                    'In_Nifty500': is_n500, # New Column Added Here
                     'Industry': industry,
                     'Price': cp,
                     'D_DTE': metrics.get('D_Price', 0), 'D_Gap%': metrics.get('D_Gap%', 0),
