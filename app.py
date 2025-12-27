@@ -5,13 +5,14 @@ import matplotlib
 from tvDatafeed import TvDatafeed, Interval
 import yfinance as yf
 import io
+import time
 from datetime import datetime
 import requests
 
 # Setup non-interactive plotting
 matplotlib.use('Agg')
 
-st.set_page_config(page_title="Stock DTE Meter 1q", layout="wide")
+st.set_page_config(page_title="Stock DTE Meter", layout="wide")
 
 # --- Initialize Session State ---
 if 'processed_results' not in st.session_state:
@@ -20,21 +21,35 @@ if 'last_index' not in st.session_state:
     st.session_state.last_index = 0
 if 'is_running' not in st.session_state:
     st.session_state.is_running = False
-if 'nifty_500_list' not in st.session_state:
-    st.session_state.nifty_500_list = []
+if 'nifty_data_df' not in st.session_state:
+    st.session_state.nifty_data_df = pd.DataFrame()
 
 # --- Helper Functions ---
 
-def get_nifty_500():
+def fetch_nse_master_data():
+    """Fetches the official Nifty 500 list with Industry classification."""
     url = "https://archives.nseindia.com/content/indices/ind_nifty500list.csv"
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
         response = requests.get(url, headers=headers)
         df = pd.read_csv(io.StringIO(response.text))
-        symbol_col = next((c for c in df.columns if c.lower() == 'symbol'), None)
-        return df[symbol_col].str.upper().tolist() if symbol_col else []
+        df.columns = df.columns.str.upper()
+        return df
     except Exception:
-        return []
+        return pd.DataFrame()
+
+def get_industry_hybrid(sym, master_df):
+    """Priority 1: NSE Master List | Priority 2: Yahoo Finance"""
+    # Try NSE first
+    if not master_df.empty and sym in master_df['SYMBOL'].values:
+        return master_df[master_df['SYMBOL'] == sym]['INDUSTRY'].values[0]
+    
+    # Fallback to Yahoo Finance
+    try:
+        ticker = yf.Ticker(f"{sym}.NS")
+        return ticker.info.get('sector', 'N/A')
+    except:
+        return "N/A"
 
 def calculate_dte_metrics(df):
     try:
@@ -60,8 +75,9 @@ def calculate_dte_metrics(df):
         return {'gap': round(percent_gap, 2), 'price': round(current_price, 2), 'dte_lvl': round(dte_price, 2)}
     except: return None
 
-if not st.session_state.nifty_500_list:
-    st.session_state.nifty_500_list = get_nifty_500()
+# Load NSE Master Data on Startup
+if st.session_state.nifty_data_df.empty:
+    st.session_state.nifty_data_df = fetch_nse_master_data()
 
 st.title("📊 Stock DTE Meter")
 
@@ -70,10 +86,9 @@ st.subheader("🔍 Single Stock Quick Lookup")
 quick_sym = st.text_input("Enter NSE Symbol (e.g., RELIANCE):").strip().upper()
 
 if quick_sym:
-    tv_quick = TvDatafeed()
-    ticker = yf.Ticker(f"{quick_sym}.NS")
-    sector = ticker.info.get('sector', 'N/A') # Re-added Industry/Sector
+    industry = get_industry_hybrid(quick_sym, st.session_state.nifty_data_df)
     
+    tv_quick = TvDatafeed()
     q_res = []
     mapping = {'Daily (1D)': Interval.in_daily, 'Weekly (1W)': Interval.in_weekly}
     
@@ -85,7 +100,7 @@ if quick_sym:
                 q_res.append({"Interval": lbl, "Price": data['price'], "DTE Price": data['dte_lvl'], "Gap%": data['gap']})
     
     if q_res:
-        st.write(f"**Industry/Sector:** {sector}")
+        st.write(f"**Industry/Sector:** {industry}")
         st.table(pd.DataFrame(q_res))
     else:
         st.error("No data found for this symbol.")
@@ -95,13 +110,15 @@ st.divider()
 # --- SECTION 2: BATCH SCANNER ---
 st.subheader("📑 Batch Scanner")
 uploaded_file = st.file_uploader("Upload Excel with 'Symbol' column", type=["xlsx", "xls"])
+
 stock_list = []
 if uploaded_file:
     df_in = pd.read_excel(uploaded_file)
     sym_col = next((c for c in df_in.columns if c.lower() == 'symbol'), None)
     if sym_col: stock_list = df_in[sym_col].dropna().astype(str).tolist()
 else:
-    if st.checkbox("Use NIFTY 500 Index"): stock_list = st.session_state.nifty_500_list
+    if st.checkbox("Use NIFTY 500 Index"): 
+        stock_list = st.session_state.nifty_data_df['SYMBOL'].tolist() if not st.session_state.nifty_data_df.empty else []
 
 if stock_list:
     c1, c2, c3 = st.columns(3)
@@ -116,7 +133,7 @@ if stock_list:
 
     if st.session_state.processed_results:
         df_res = pd.DataFrame(st.session_state.processed_results)
-        st.subheader("📋 All Scanner Results")
+        st.subheader("📋 Scanner Results")
         st.dataframe(df_res, use_container_width=True)
         
         output = io.BytesIO()
@@ -129,15 +146,17 @@ if stock_list:
         progress_bar = st.progress(st.session_state.last_index / len(stock_list))
         
         proc_map = {'D': Interval.in_daily, 'W': Interval.in_weekly}
+        master = st.session_state.nifty_data_df
         
         while st.session_state.last_index < len(stock_list) and st.session_state.is_running:
             idx = st.session_state.last_index
             sym = stock_list[idx].strip().upper()
             
+            # Hybrid Industry Retrieval
+            industry = get_industry_hybrid(sym, master)
+            
             try:
                 metrics = {}
-                ticker = yf.Ticker(f"{sym}.NS")
-                sector = ticker.info.get('sector', 'N/A') # Re-added Industry/Sector
                 cp = 0
                 for lbl, tint in proc_map.items():
                     hist = tv.get_hist(symbol=sym, exchange='NSE', interval=tint, n_bars=100)
@@ -149,7 +168,7 @@ if stock_list:
                 
                 st.session_state.processed_results.append({
                     'Symbol': sym, 
-                    'Industry': sector, # restored
+                    'Industry': industry,
                     'Price': cp,
                     'D_DTE': metrics.get('D_Price', 0), 'D_Gap%': metrics.get('D_Gap%', 0),
                     'W_DTE': metrics.get('W_Price', 0), 'W_Gap%': metrics.get('W_Gap%', 0)
@@ -158,4 +177,11 @@ if stock_list:
             
             st.session_state.last_index += 1
             progress_bar.progress(st.session_state.last_index / len(stock_list))
+            
+            if st.session_state.last_index >= len(stock_list):
+                st.session_state.is_running = False
+                st.balloons()
+                st.toast("✅ Report Generation Complete!", icon="🚀")
+                st.rerun()
+
             if st.session_state.last_index % 10 == 0: st.rerun()
