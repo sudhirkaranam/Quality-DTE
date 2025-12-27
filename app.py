@@ -41,7 +41,7 @@ def calculate_dte_metrics(df):
         if df is None or df.empty or len(df) < 15: return None
         current_price = df['close'].iloc[-1]
         
-        # Plotting logic to determine DTE level
+        # Determine DTE level by scaling max volume peak against price range
         fig, ax1 = plt.subplots()
         ax1.plot(df.index, df['close'])
         ax2 = ax1.twinx()
@@ -65,10 +65,11 @@ if not st.session_state.nifty_500_list:
     st.session_state.nifty_500_list = get_nifty_500()
 
 st.title("📊 Stock DTE Meter")
+st.caption("Analyzing Price/Volume Equilibrium for Daily (1D) and Weekly (1W) timeframes.")
 
 # --- SECTION 1: QUICK LOOKUP ---
 st.subheader("🔍 Single Stock Quick Lookup")
-quick_sym = st.text_input("Enter Symbol:").strip().upper()
+quick_sym = st.text_input("Enter Symbol (e.g., RELIANCE):").strip().upper()
 if quick_sym:
     tv_quick = TvDatafeed()
     ticker = yf.Ticker(f"{quick_sym}.NS")
@@ -76,8 +77,8 @@ if quick_sym:
     q_res = []
     is_n500 = "Yes" if quick_sym in st.session_state.nifty_500_list else "No"
     
-    # Mapping Daily and Weekly intervals only
-    mapping = {'Daily': Interval.in_4_hour, 'Weekly': Interval.in_daily}
+    # Mapping to 1D and 1W as requested
+    mapping = {'Daily (1D)': Interval.in_daily, 'Weekly (1W)': Interval.in_weekly}
     
     for lbl, tint in mapping.items():
         hist = tv_quick.get_hist(symbol=quick_sym, exchange='NSE', interval=tint, n_bars=100)
@@ -92,14 +93,14 @@ st.divider()
 
 # --- SECTION 2: BATCH SCANNER ---
 st.subheader("📑 Batch Scanner")
-uploaded_file = st.file_uploader("Upload Excel", type=["xlsx", "xls"])
+uploaded_file = st.file_uploader("Upload Excel with 'Symbol' column", type=["xlsx", "xls"])
 stock_list = []
 if uploaded_file:
     df_in = pd.read_excel(uploaded_file)
     sym_col = next((c for c in df_in.columns if c.lower() == 'symbol'), None)
     if sym_col: stock_list = df_in[sym_col].dropna().astype(str).tolist()
 else:
-    if st.checkbox("Use NIFTY 500"): stock_list = st.session_state.nifty_500_list
+    if st.checkbox("Use NIFTY 500 Index"): stock_list = st.session_state.nifty_500_list
 
 if stock_list:
     c1, c2, c3 = st.columns(3)
@@ -116,8 +117,8 @@ if stock_list:
         tv = TvDatafeed()
         progress_bar = st.progress(st.session_state.last_index / len(stock_list))
         
-        # Mapping D (4H) and W (1D) only
-        proc_map = {'D': Interval.in_4_hour, 'W': Interval.in_daily}
+        # Mapping for processing
+        proc_map = {'D': Interval.in_daily, 'W': Interval.in_weekly}
         
         while st.session_state.last_index < len(stock_list) and st.session_state.is_running:
             idx = st.session_state.last_index
@@ -147,9 +148,20 @@ if stock_list:
             progress_bar.progress(st.session_state.last_index / len(stock_list))
             if st.session_state.last_index % 10 == 0: st.rerun()
 
+    # --- RESULTS DISPLAY ---
     if st.session_state.processed_results:
         df_res = pd.DataFrame(st.session_state.processed_results)
-        st.dataframe(df_res)
+        
+        # 1. Top 10 Highest Gaps (Weekly)
+        st.subheader("🔥 Top 10 Highest Weekly Gaps")
+        top_10 = df_res.nlargest(10, 'W_Gap%')[['Symbol', 'Sector', 'Price', 'W_DTE', 'W_Gap%']]
+        st.dataframe(top_10, use_container_width=True)
+        
+        # 2. Full Data Table
+        st.subheader("📋 Full Scan Results")
+        st.dataframe(df_res, use_container_width=True)
+        
+        # 3. Download Options
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             df_res.to_excel(writer, index=False, sheet_name='DTE_Report')
@@ -159,4 +171,10 @@ if stock_list:
             for col_num, val in enumerate(df_res.columns.values):
                 worksheet.write(0, col_num, val, header_fmt)
             worksheet.set_column('A:H', 16)
-        st.download_button("💾 Download Report", output.getvalue(), f"Stock_DTE_Meter_{datetime.now().strftime('%Y%m%d')}.xlsx")
+        
+        st.download_button(
+            label="💾 Download Full Report (Excel)",
+            data=output.getvalue(),
+            file_name=f"DTE_Scanner_{datetime.now().strftime('%Y%m%d')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
