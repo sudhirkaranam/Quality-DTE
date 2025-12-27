@@ -12,7 +12,7 @@ import requests
 # Setup non-interactive plotting
 matplotlib.use('Agg')
 
-st.set_page_config(page_title="Stock DTE Meter SK", layout="wide")
+st.set_page_config(page_title="Stock DTE Meter 1", layout="wide")
 
 # --- Initialize Session State ---
 if 'processed_results' not in st.session_state:
@@ -38,16 +38,25 @@ def get_nifty_500():
         return []
 
 def search_nse_symbols(entry):
-    """Fetches a list of possible NSE symbols based on user entry."""
+    """Robustly fetches NSE symbols based on user entry."""
     try:
-        search = yf.Search(entry, max_results=8)
-        # Filter for NSE (National Stock Exchange of India) specifically
-        results = [
-            {"label": f"{t['quotesummary']['longName']} ({t['symbol']})", "symbol": t['symbol'].replace('.NS', '')}
-            for t in search.tickers if t['symbol'].endswith('.NS')
-        ]
+        # Use yf.Search but with safer key access
+        search = yf.Search(entry, max_results=10)
+        results = []
+        
+        if search.tickers:
+            for t in search.tickers:
+                symbol = t.get('symbol', '')
+                # Ensure we only get Indian stocks from NSE
+                if symbol.endswith('.NS'):
+                    # Try to get a name, fallback to symbol if name is missing
+                    name = t.get('shortname') or t.get('longname') or symbol
+                    results.append({
+                        "label": f"{name} ({symbol})", 
+                        "symbol": symbol.replace('.NS', '')
+                    })
         return results
-    except:
+    except Exception as e:
         return []
 
 def calculate_dte_metrics(df):
@@ -80,22 +89,22 @@ st.title("📊 Stock DTE Meter")
 
 # --- SECTION 1: SEARCH & QUICK LOOKUP ---
 st.subheader("🔍 Single Stock Search")
-user_input = st.text_input("Search Company Name (e.g., 'Tata', 'HDFC', 'Reliance'):").strip()
+user_input = st.text_input("Search Company Name (e.g., 'Tata Motors', 'HDFC Bank'):").strip()
 
 if user_input:
     matches = search_nse_symbols(user_input)
     
     if matches:
-        # Create a dropdown for the user to select the correct stock
         options = {m['label']: m['symbol'] for m in matches}
-        selected_label = st.selectbox("Select the correct company:", options.keys())
+        selected_label = st.selectbox("Select the correct company from results:", options.keys())
         quick_sym = options[selected_label]
         
-        if st.button("Analyze Selected Stock"):
-            with st.status(f"Fetching data for {quick_sym}...", expanded=True) as status:
+        if st.button("Run DTE Analysis"):
+            with st.spinner(f"Analyzing {quick_sym}..."):
                 tv_quick = TvDatafeed()
                 ticker = yf.Ticker(f"{quick_sym}.NS")
-                sector = ticker.info.get('sector', 'N/A')
+                # Handle potential sector retrieval issues
+                sector = ticker.info.get('sector', 'N/A') if ticker.info else 'N/A'
                 q_res = []
                 
                 mapping = {'Daily (1D)': Interval.in_daily, 'Weekly (1W)': Interval.in_weekly}
@@ -104,14 +113,20 @@ if user_input:
                     hist = tv_quick.get_hist(symbol=quick_sym, exchange='NSE', interval=tint, n_bars=100)
                     data = calculate_dte_metrics(hist)
                     if data:
-                        q_res.append({"Interval": lbl, "Price": data['price'], "DTE Price": data['dte_lvl'], "Gap%": data['gap']})
-                status.update(label="Analysis Complete!", state="complete")
-
+                        q_res.append({
+                            "Interval": lbl, 
+                            "Price": data['price'], 
+                            "DTE Price": data['dte_lvl'], 
+                            "Gap%": data['gap']
+                        })
+            
             if q_res:
-                st.write(f"**Sector:** {sector} | **Ticker:** {quick_sym}")
+                st.info(f"**Symbol:** {quick_sym} | **Sector:** {sector}")
                 st.table(pd.DataFrame(q_res))
+            else:
+                st.warning("Data fetch failed. TradingView might be blocking the request. Try again in a moment.")
     else:
-        st.warning("No matching NSE symbols found. Try refining your search terms.")
+        st.error("No NSE matches found. Try entering the exact symbol (e.g., 'RELIANCE' instead of 'Reliance Industries').")
 
 st.divider()
 
@@ -127,71 +142,5 @@ else:
     if st.checkbox("Use NIFTY 500 Index"): stock_list = st.session_state.nifty_500_list
 
 if stock_list:
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3 = st.columns(3)
     with c1:
-        if st.button("🚀 Start/Resume"): st.session_state.is_running = True
-    with c2:
-        if st.button("Pause"): st.session_state.is_running = False
-    with c3:
-        if st.button("Reset"):
-            st.session_state.processed_results = []; st.session_state.last_index = 0
-            st.session_state.is_running = False; st.rerun()
-
-    if st.session_state.is_running and st.session_state.last_index < len(stock_list):
-        tv = TvDatafeed()
-        progress_bar = st.progress(st.session_state.last_index / len(stock_list))
-        status_text = st.empty()
-        
-        proc_map = {'D': Interval.in_daily, 'W': Interval.in_weekly}
-        start_time = time.time()
-        
-        while st.session_state.last_index < len(stock_list) and st.session_state.is_running:
-            idx = st.session_state.last_index
-            sym = stock_list[idx].strip().upper()
-            
-            # Time calculation
-            elapsed = time.time() - start_time
-            processed = idx + 1
-            avg_time = elapsed / processed if processed > 0 else 0
-            remaining = avg_time * (len(stock_list) - processed)
-            status_text.text(f"Scanning {sym}... Est. time remaining: {int(remaining // 60)}m {int(remaining % 60)}s")
-            
-            try:
-                metrics = {}
-                ticker = yf.Ticker(f"{sym}.NS")
-                sector = ticker.info.get('sector', 'N/A')
-                cp = 0
-                
-                for lbl, tint in proc_map.items():
-                    hist = tv.get_hist(symbol=sym, exchange='NSE', interval=tint, n_bars=100)
-                    d = calculate_dte_metrics(hist)
-                    if d:
-                        metrics[f'{lbl}_Price'] = d['dte_lvl']
-                        metrics[f'{lbl}_Gap%'] = d['gap']
-                        cp = d['price']
-
-                st.session_state.processed_results.append({
-                    'Symbol': sym, 'Sector': sector, 'Price': cp,
-                    'D_DTE': metrics.get('D_Price', 0), 'D_Gap%': metrics.get('D_Gap%', 0),
-                    'W_DTE': metrics.get('W_Price', 0), 'W_Gap%': metrics.get('W_Gap%', 0)
-                })
-            except: pass
-            
-            st.session_state.last_index += 1
-            progress_bar.progress(st.session_state.last_index / len(stock_list))
-            if st.session_state.last_index % 5 == 0: st.rerun()
-
-    if st.session_state.processed_results:
-        df_res = pd.DataFrame(st.session_state.processed_results)
-        
-        st.subheader("🔥 Top 10 Highest Weekly Gaps")
-        top_10 = df_res.nlargest(10, 'W_Gap%')[['Symbol', 'Sector', 'Price', 'W_DTE', 'W_Gap%']]
-        st.dataframe(top_10, use_container_width=True)
-        
-        st.subheader("📋 All Results")
-        st.dataframe(df_res, use_container_width=True)
-        
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            df_res.to_excel(writer, index=False, sheet_name='DTE_Report')
-        st.download_button("💾 Download Full Report", output.getvalue(), f"DTE_Report_{datetime.now().strftime('%Y%m%d')}.xlsx")
