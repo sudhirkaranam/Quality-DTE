@@ -41,6 +41,7 @@ def calculate_dte_metrics(df):
         if df is None or df.empty or len(df) < 15: return None
         current_price = df['close'].iloc[-1]
         
+        # Determine DTE level by scaling max volume peak against price range
         fig, ax1 = plt.subplots()
         ax1.plot(df.index, df['close'])
         ax2 = ax1.twinx()
@@ -70,6 +71,9 @@ quick_sym = st.text_input("Enter NSE Symbol (e.g., RELIANCE):").strip().upper()
 
 if quick_sym:
     tv_quick = TvDatafeed()
+    ticker = yf.Ticker(f"{quick_sym}.NS")
+    sector = ticker.info.get('sector', 'N/A') # Re-added Industry/Sector
+    
     q_res = []
     mapping = {'Daily (1D)': Interval.in_daily, 'Weekly (1W)': Interval.in_weekly}
     
@@ -81,6 +85,7 @@ if quick_sym:
                 q_res.append({"Interval": lbl, "Price": data['price'], "DTE Price": data['dte_lvl'], "Gap%": data['gap']})
     
     if q_res:
+        st.write(f"**Industry/Sector:** {sector}")
         st.table(pd.DataFrame(q_res))
     else:
         st.error("No data found for this symbol.")
@@ -109,10 +114,8 @@ if stock_list:
             st.session_state.processed_results = []; st.session_state.last_index = 0
             st.session_state.is_running = False; st.rerun()
 
-    # --- RESULTS DISPLAY ---
     if st.session_state.processed_results:
         df_res = pd.DataFrame(st.session_state.processed_results)
-        
         st.subheader("📋 All Scanner Results")
         st.dataframe(df_res, use_container_width=True)
         
@@ -121,7 +124,6 @@ if stock_list:
             df_res.to_excel(writer, index=False, sheet_name='DTE_Report')
         st.download_button("💾 Download Full Report", output.getvalue(), f"DTE_Report_{datetime.now().strftime('%Y%m%d')}.xlsx")
 
-    # --- PROCESSING LOOP ---
     if st.session_state.is_running and st.session_state.last_index < len(stock_list):
         tv = TvDatafeed()
         progress_bar = st.progress(st.session_state.last_index / len(stock_list))
@@ -134,6 +136,8 @@ if stock_list:
             
             try:
                 metrics = {}
+                ticker = yf.Ticker(f"{sym}.NS")
+                sector = ticker.info.get('sector', 'N/A') # Re-added Industry/Sector
                 cp = 0
                 for lbl, tint in proc_map.items():
                     hist = tv.get_hist(symbol=sym, exchange='NSE', interval=tint, n_bars=100)
@@ -144,7 +148,9 @@ if stock_list:
                         cp = d['price']
                 
                 st.session_state.processed_results.append({
-                    'Symbol': sym, 'Price': cp,
+                    'Symbol': sym, 
+                    'Industry': sector, # restored
+                    'Price': cp,
                     'D_DTE': metrics.get('D_Price', 0), 'D_Gap%': metrics.get('D_Gap%', 0),
                     'W_DTE': metrics.get('W_Price', 0), 'W_Gap%': metrics.get('W_Gap%', 0)
                 })
