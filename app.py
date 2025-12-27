@@ -5,14 +5,13 @@ import matplotlib
 from tvDatafeed import TvDatafeed, Interval
 import yfinance as yf
 import io
-import time
 from datetime import datetime
 import requests
 
 # Setup non-interactive plotting
 matplotlib.use('Agg')
 
-st.set_page_config(page_title="Stock DTE Meter 11", layout="wide")
+st.set_page_config(page_title="Stock DTE Meter", layout="wide")
 
 # --- Initialize Session State ---
 if 'processed_results' not in st.session_state:
@@ -36,36 +35,6 @@ def get_nifty_500():
         return df[symbol_col].str.upper().tolist() if symbol_col else []
     except Exception:
         return []
-
-def search_nse_symbols(entry):
-    """Aggressive search for NSE symbols using Yahoo Finance."""
-    results = []
-    try:
-        # Method 1: Check if the entry itself is a valid NSE ticker
-        test_sym = entry.upper().replace(".NS", "")
-        ticker_obj = yf.Ticker(f"{test_sym}.NS")
-        if ticker_obj.history(period="1d").empty is False:
-            results.append({"label": f"Direct Match: {test_sym}", "symbol": test_sym})
-
-        # Method 2: Keyword search
-        search = yf.Search(entry, max_results=10)
-        if search.tickers:
-            for t in search.tickers:
-                s = t.get('symbol', '')
-                if s.endswith('.NS'):
-                    name = t.get('shortname') or t.get('longname') or s
-                    results.append({"label": f"{name} ({s})", "symbol": s.replace('.NS', '')})
-        
-        # Remove duplicates
-        seen = set()
-        unique_results = []
-        for r in results:
-            if r['symbol'] not in seen:
-                unique_results.append(r)
-                seen.add(r['symbol'])
-        return unique_results
-    except:
-        return results
 
 def calculate_dte_metrics(df):
     try:
@@ -95,44 +64,32 @@ if not st.session_state.nifty_500_list:
 
 st.title("📊 Stock DTE Meter")
 
-# --- SECTION 1: SEARCH & QUICK LOOKUP ---
-st.subheader("🔍 Single Stock Search")
-user_input = st.text_input("Enter Company Name or Ticker (e.g. 'Reliance' or 'TCS'):").strip()
+# --- SECTION 1: QUICK LOOKUP ---
+st.subheader("🔍 Single Stock Quick Lookup")
+quick_sym = st.text_input("Enter NSE Symbol (e.g., RELIANCE):").strip().upper()
 
-if user_input:
-    matches = search_nse_symbols(user_input)
-    if matches:
-        options = {m['label']: m['symbol'] for m in matches}
-        selected_label = st.selectbox("Select exact stock:", options.keys())
-        quick_sym = options[selected_label]
-        
-        if st.button("Run Analysis"):
-            with st.spinner(f"Analyzing {quick_sym}..."):
-                tv_quick = TvDatafeed()
-                ticker = yf.Ticker(f"{quick_sym}.NS")
-                sector = ticker.info.get('sector', 'N/A') if ticker.info else 'N/A'
-                q_res = []
-                mapping = {'Daily (1D)': Interval.in_daily, 'Weekly (1W)': Interval.in_weekly}
-                
-                for lbl, tint in mapping.items():
-                    hist = tv_quick.get_hist(symbol=quick_sym, exchange='NSE', interval=tint, n_bars=100)
-                    data = calculate_dte_metrics(hist)
-                    if data:
-                        q_res.append({"Interval": lbl, "Price": data['price'], "DTE Price": data['dte_lvl'], "Gap%": data['gap']})
-            
-            if q_res:
-                st.info(f"**Symbol:** {quick_sym} | **Sector:** {sector}")
-                st.table(pd.DataFrame(q_res))
-            else:
-                st.warning("No historical data found. TradingView may be offline.")
+if quick_sym:
+    tv_quick = TvDatafeed()
+    q_res = []
+    mapping = {'Daily (1D)': Interval.in_daily, 'Weekly (1W)': Interval.in_weekly}
+    
+    with st.spinner(f"Fetching {quick_sym}..."):
+        for lbl, tint in mapping.items():
+            hist = tv_quick.get_hist(symbol=quick_sym, exchange='NSE', interval=tint, n_bars=100)
+            data = calculate_dte_metrics(hist)
+            if data:
+                q_res.append({"Interval": lbl, "Price": data['price'], "DTE Price": data['dte_lvl'], "Gap%": data['gap']})
+    
+    if q_res:
+        st.table(pd.DataFrame(q_res))
     else:
-        st.error("No NSE matches found. Try using only the ticker symbol (e.g., 'SBIN').")
+        st.error("No data found for this symbol.")
 
 st.divider()
 
 # --- SECTION 2: BATCH SCANNER ---
 st.subheader("📑 Batch Scanner")
-uploaded_file = st.file_uploader("Upload Excel", type=["xlsx", "xls"])
+uploaded_file = st.file_uploader("Upload Excel with 'Symbol' column", type=["xlsx", "xls"])
 stock_list = []
 if uploaded_file:
     df_in = pd.read_excel(uploaded_file)
@@ -152,27 +109,31 @@ if stock_list:
             st.session_state.processed_results = []; st.session_state.last_index = 0
             st.session_state.is_running = False; st.rerun()
 
+    # --- RESULTS DISPLAY ---
+    if st.session_state.processed_results:
+        df_res = pd.DataFrame(st.session_state.processed_results)
+        
+        st.subheader("📋 All Scanner Results")
+        st.dataframe(df_res, use_container_width=True)
+        
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            df_res.to_excel(writer, index=False, sheet_name='DTE_Report')
+        st.download_button("💾 Download Full Report", output.getvalue(), f"DTE_Report_{datetime.now().strftime('%Y%m%d')}.xlsx")
+
+    # --- PROCESSING LOOP ---
     if st.session_state.is_running and st.session_state.last_index < len(stock_list):
         tv = TvDatafeed()
         progress_bar = st.progress(st.session_state.last_index / len(stock_list))
-        status_text = st.empty()
+        
         proc_map = {'D': Interval.in_daily, 'W': Interval.in_weekly}
-        start_time = time.time()
         
         while st.session_state.last_index < len(stock_list) and st.session_state.is_running:
             idx = st.session_state.last_index
             sym = stock_list[idx].strip().upper()
             
-            elapsed = time.time() - start_time
-            processed_now = (idx - st.session_state.last_index) + 1
-            avg_time = elapsed / processed_now if processed_now > 0 else 1.5
-            remaining = avg_time * (len(stock_list) - idx)
-            status_text.text(f"Scanning {sym}... Est. remaining: {int(remaining // 60)}m {int(remaining % 60)}s")
-            
             try:
                 metrics = {}
-                ticker = yf.Ticker(f"{sym}.NS")
-                sector = ticker.info.get('sector', 'N/A')
                 cp = 0
                 for lbl, tint in proc_map.items():
                     hist = tv.get_hist(symbol=sym, exchange='NSE', interval=tint, n_bars=100)
@@ -183,7 +144,7 @@ if stock_list:
                         cp = d['price']
                 
                 st.session_state.processed_results.append({
-                    'Symbol': sym, 'Sector': sector, 'Price': cp,
+                    'Symbol': sym, 'Price': cp,
                     'D_DTE': metrics.get('D_Price', 0), 'D_Gap%': metrics.get('D_Gap%', 0),
                     'W_DTE': metrics.get('W_Price', 0), 'W_Gap%': metrics.get('W_Gap%', 0)
                 })
@@ -191,16 +152,4 @@ if stock_list:
             
             st.session_state.last_index += 1
             progress_bar.progress(st.session_state.last_index / len(stock_list))
-            if st.session_state.last_index % 5 == 0: st.rerun()
-
-    if st.session_state.processed_results:
-        df_res = pd.DataFrame(st.session_state.processed_results)
-        st.subheader("🔥 Top 10 Highest Weekly Gaps")
-        top_10 = df_res.nlargest(10, 'W_Gap%')[['Symbol', 'Sector', 'Price', 'W_DTE', 'W_Gap%']]
-        st.dataframe(top_10, use_container_width=True)
-        st.subheader("📋 All Results")
-        st.dataframe(df_res, use_container_width=True)
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            df_res.to_excel(writer, index=False, sheet_name='DTE_Report')
-        st.download_button("💾 Download Report", output.getvalue(), f"DTE_Report_{datetime.now().strftime('%Y%m%d')}.xlsx")
+            if st.session_state.last_index % 10 == 0: st.rerun()
