@@ -12,7 +12,7 @@ import requests
 # Setup non-interactive plotting
 matplotlib.use('Agg')
 
-st.set_page_config(page_title="Stock DTE Meter", layout="wide")
+st.set_page_config(page_title="Stock DTE Meter Sudhir", layout="wide")
 
 # --- Initialize Session State ---
 if 'processed_results' not in st.session_state:
