@@ -8,7 +8,7 @@ import io
 from datetime import datetime
 import requests
 
-# Setup non-interactive plotting to prevent threading issues
+# Setup non-interactive plotting
 matplotlib.use('Agg')
 
 st.set_page_config(page_title="Stock Analysis Hub", layout="wide")
@@ -27,12 +27,11 @@ if 'nifty_data_df' not in st.session_state:
 
 @st.cache_resource
 def get_tv_connection():
-    """Initializes and caches the TradingView connection."""
     return TvDatafeed()
 
 @st.cache_data
 def fetch_nse_master_data():
-    """Fetches official Nifty 500 list with Industry classification."""
+    """Fetches the official Nifty 500 list with Industry classification."""
     url = "https://archives.nseindia.com/content/indices/ind_nifty500list.csv"
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
@@ -43,15 +42,22 @@ def fetch_nse_master_data():
     except:
         return pd.DataFrame()
 
-def get_industry_hybrid(sym, master_df):
-    """Priority 1: NSE Master List | Priority 2: Yahoo Finance."""
+def get_stock_info(sym, master_df):
+    """Retrieves Industry and Nifty 500 status."""
+    is_nifty500 = "No"
+    industry = "N/A"
+    
     if not master_df.empty and sym in master_df['SYMBOL'].values:
-        return master_df[master_df['SYMBOL'] == sym]['INDUSTRY'].values[0]
-    try:
-        ticker = yf.Ticker(f"{sym}.NS")
-        return ticker.info.get('sector', 'N/A')
-    except:
-        return "N/A"
+        is_nifty500 = "Yes"
+        industry = master_df[master_df['SYMBOL'] == sym]['INDUSTRY'].values[0]
+    else:
+        try:
+            ticker = yf.Ticker(f"{sym}.NS")
+            industry = ticker.info.get('sector', 'N/A')
+        except:
+            pass
+            
+    return industry, is_nifty500
 
 def get_tip_price(df, target_series_name, target_idx):
     """Scales Volume or MFI peaks to the Price axis."""
@@ -93,7 +99,7 @@ def calculate_dte_metrics(df):
 # --- MODULE 2: MFI LOGIC ---
 
 def get_mfi_metrics(df):
-    """Calculates MFI Tip vs Actual Price and applies proximity/intensity filters."""
+    """Calculates MFI Tip vs Actual Price and applies filters."""
     if df is None or df.empty or len(df) < 2: return None
     df = df.copy()
     current_price = df['close'].iloc[-1]
@@ -134,8 +140,7 @@ if st.session_state.nifty_data_df.empty:
     st.session_state.nifty_data_df = fetch_nse_master_data()
 
 st.sidebar.title("🛠️ Navigation")
-# Scanner is the first option in the navigator
-page = st.sidebar.radio("Navigation", ["Scanner", "DTE Meter"])
+page = st.sidebar.radio("Select Module:", ["Scanner", "DTE Meter"])
 
 if page == "DTE Meter":
     st.sidebar.info("⏳ Timeframe: Daily & Weekly (Fixed)")
@@ -156,37 +161,36 @@ if st.sidebar.button("🗑️ Reset All Results"):
 
 if page == "Scanner":
     st.title("🎯 MFI High-Intensity Scanner")
-    st.markdown("Filters stocks based on **Market Facilitation Index** intensity (>15%) and price proximity (<2%).")
     
     st.subheader("🔍 Single Stock NSE Lookup")
     quick_sym = st.text_input("Enter NSE Symbol (e.g., RELIANCE):", key="mfi_quick").strip().upper()
     if quick_sym:
+        industry, is_nifty500 = get_stock_info(quick_sym, st.session_state.nifty_data_df)
         tv = get_tv_connection()
         hist = tv.get_hist(symbol=quick_sym, exchange='NSE', interval=selected_interval, n_bars=100)
         m = get_mfi_metrics(hist)
         if m:
-            st.write(f"**Sector:** {get_industry_hybrid(quick_sym, st.session_state.nifty_data_df)}")
+            m.update({'Sector': industry, 'Nifty 500': is_nifty500})
             st.table(pd.DataFrame([m]))
             if m['passed_filter']: st.success("✅ Passed Strategy Filters")
     st.divider()
 
 elif page == "DTE Meter":
     st.title("📊 Stock DTE Meter")
-    st.markdown("Identifies price levels projected from **highest volume peaks** on Daily and Weekly charts.")
     
     st.subheader("🔍 Quick DTE Lookup")
     quick_sym = st.text_input("Enter NSE Symbol:", key="dte_quick").strip().upper()
     if quick_sym:
+        industry, is_nifty500 = get_stock_info(quick_sym, st.session_state.nifty_data_df)
         tv = get_tv_connection()
         q_res = []
         for lbl, tint in {'Daily': Interval.in_daily, 'Weekly': Interval.in_weekly}.items():
             hist = tv.get_hist(symbol=quick_sym, exchange='NSE', interval=tint, n_bars=100)
             d = calculate_dte_metrics(hist)
             if d:
-                d.update({"Interval": lbl})
+                d.update({"Interval": lbl, "Sector": industry, "Nifty 500": is_nifty500})
                 q_res.append(d)
         if q_res:
-            st.write(f"**Sector:** {get_industry_hybrid(quick_sym, st.session_state.nifty_data_df)}")
             st.table(pd.DataFrame(q_res))
     st.divider()
 
@@ -219,7 +223,7 @@ if stock_list:
         
         while st.session_state.last_index < len(stock_list) and st.session_state.is_running:
             sym = stock_list[st.session_state.last_index].strip().upper()
-            industry = get_industry_hybrid(sym, st.session_state.nifty_data_df)
+            industry, is_nifty500 = get_stock_info(sym, st.session_state.nifty_data_df)
             try:
                 if page == "DTE Meter":
                     metrics, cp = {}, 0
@@ -229,7 +233,7 @@ if stock_list:
                         if d:
                             metrics[f'{lbl}_Price'], metrics[f'{lbl}_Gap%'], cp = d['dte_lvl'], d['gap'], d['price']
                     st.session_state.processed_results.append({
-                        'Symbol': sym, 'Sector': industry, 'Price': cp,
+                        'Symbol': sym, 'Nifty 500': is_nifty500, 'Sector': industry, 'Price': cp,
                         'D_DTE': metrics.get('D_Price', 0), 'D_Gap%': metrics.get('D_Gap%', 0),
                         'W_DTE': metrics.get('W_Price', 0), 'W_Gap%': metrics.get('W_Gap%', 0)
                     })
@@ -238,7 +242,7 @@ if stock_list:
                     m = get_mfi_metrics(hist)
                     if m and m['passed_filter']:
                         st.session_state.processed_results.append({
-                            'Symbol': sym, 'Sector': industry, 'Price': m['curr_price'],
+                            'Symbol': sym, 'Nifty 500': is_nifty500, 'Sector': industry, 'Price': m['curr_price'],
                             'Actual @ Max MFI': m['actual_at_mfi'], 'Tip Price': m['tip_price'],
                             'MFI Color': m['mfi_color'], 'Intensity Diff%': m['diff_pct'], 'Peak Date': m['mfi_date']
                         })
@@ -250,7 +254,6 @@ if stock_list:
 
     if st.session_state.processed_results:
         st.dataframe(pd.DataFrame(st.session_state.processed_results), use_container_width=True)
-        
         dl_date = datetime.now().strftime("%Y-%m-%d")
         filename = f"{page}_Report_{timeframe_label}_{dl_date}.xlsx"
         output = io.BytesIO()
