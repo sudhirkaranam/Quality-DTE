@@ -128,7 +128,7 @@ def get_mfi_metrics(df):
 # --- NAVIGATION ---
 
 st.sidebar.title("🛠️ Navigation")
-page = st.sidebar.radio("Select Strategy:", ["DTE Meter (Volume-based)", "MFI Strategy Scanner"])
+page = st.sidebar.radio("Select Strategy:", ["MFI Strategy Scanner","DTE Meter"])
 
 # When switching pages, we should offer the option to reset data
 if st.sidebar.button("🗑️ Clear All Scan Results"):
