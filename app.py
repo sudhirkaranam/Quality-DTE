@@ -79,107 +79,96 @@ def calculate_dte_metrics(df):
         current_price = df['close'].iloc[-1]
         max_vol_idx = df['volume'].idxmax()
         dte_price = get_tip_price(df, 'volume', max_vol_idx)
-        gap = ((dte_price - current_price) / current_price) * 100
-        return {
-            'gap': round(gap, 2), 
-            'price': round(current_price, 2), 
-            'dte_lvl': dte_price,
-            'date': max_vol_idx.strftime('%Y-%m-%d')
-        }
+        percent_gap = ((dte_price - current_price) / current_price) * 100
+        return {'gap': round(percent_gap, 2), 'price': round(current_price, 2), 'dte_lvl': dte_price, 'date': max_vol_idx.strftime('%Y-%m-%d')}
     except: return None
 
 # --- MODULE 2: MFI LOGIC ---
 
-def calculate_mfi_strategy(df):
-    """MFI intensity logic with 2% proximity and 15% tip-difference filters."""
-    try:
-        if df is None or df.empty or len(df) < 15: return None
-        df = df.copy()
-        current_price = df['close'].iloc[-1]
-        
-        # MFI Calculation
-        df['mfi'] = (df['high'] - df['low']) / df['volume']
-        
-        # Bill Williams Color Logic
-        df['mfi_up'] = df['mfi'] > df['mfi'].shift(1)
-        df['vol_up'] = df['volume'] > df['volume'].shift(1)
-        def get_color(row):
-            if row['mfi_up'] and row['vol_up']: return "Green"
-            if not row['mfi_up'] and not row['vol_up']: return "Fade"
-            if row['mfi_up'] and not row['vol_up']: return "Fake"
-            return "Squat"
-        df['mfi_color'] = df.apply(get_color, axis=1)
+def get_mfi_metrics(df):
+    """Calculates MFI Tip vs Actual Price and applies filters."""
+    if df is None or df.empty or len(df) < 2: return None
+    df = df.copy()
+    current_price = df['close'].iloc[-1]
+    df['mfi'] = (df['high'] - df['low']) / df['volume']
+    
+    # Bill Williams Coloring
+    df['mfi_up'] = df['mfi'] > df['mfi'].shift(1)
+    df['vol_up'] = df['volume'] > df['volume'].shift(1)
+    def determine_color(row):
+        if row['mfi_up'] and row['vol_up']: return "Green"
+        if not row['mfi_up'] and not row['vol_up']: return "Fade"
+        if row['mfi_up'] and not row['vol_up']: return "Fake"
+        return "Squat"
+    df['mfi_color'] = df.apply(determine_color, axis=1)
+    
+    max_mfi_idx = df['mfi'].idxmax()
+    actual_price_at_peak = df.loc[max_mfi_idx, 'close']
+    tip_price = get_tip_price(df, 'mfi', max_mfi_idx)
+    
+    prox_to_actual = abs((current_price - actual_at_peak) / actual_at_peak) * 100
+    diff_pct = abs((tip_price - actual_at_peak) / actual_at_peak) * 100
+    is_filtered = (prox_to_actual < 2.0) and (diff_pct > 15.0)
+    
+    return {
+        'curr_price': round(current_price, 2),
+        'actual_at_mfi': round(actual_at_peak, 2),
+        'tip_price': round(tip_price, 2),
+        'prox_pct': round(prox_to_actual, 2),
+        'diff_pct': round(tip_to_actual_diff, 2),
+        'mfi_date': max_mfi_idx.strftime('%Y-%m-%d %H:%M'),
+        'mfi_color': df.loc[max_mfi_idx, 'mfi_color'],
+        'passed_filter': is_filtered
+    }
 
-        max_mfi_idx = df['mfi'].idxmax()
-        actual_at_peak = df.loc[max_mfi_idx, 'close']
-        tip_price = get_tip_price(df, 'mfi', max_mfi_idx)
-        
-        prox_pct = abs((current_price - actual_at_peak) / actual_at_peak) * 100
-        diff_pct = abs((tip_price - actual_at_peak) / actual_at_peak) * 100
-        
-        return {
-            'curr_price': round(current_price, 2),
-            'actual_at_mfi': round(actual_at_peak, 2),
-            'tip_price': tip_price,
-            'mfi_color': df.loc[max_mfi_idx, 'mfi_color'],
-            'prox_pct': round(prox_pct, 2),
-            'diff_pct': round(diff_pct, 2),
-            'date': max_mfi_idx.strftime('%Y-%m-%d %H:%M'),
-            'passed_filter': (prox_pct < 2.0) and (diff_pct > 15.0)
-        }
-    except: return None
-
-# --- MAIN INTERFACE & NAVIGATION ---
+# --- NAVIGATION ---
 
 if st.session_state.nifty_data_df.empty:
     st.session_state.nifty_data_df = fetch_nse_master_data()
 
-st.sidebar.title("🛠️ Module Selection")
-# Navigator keeping Scanner first
-page = st.sidebar.radio("Navigation", ["Scanner", "DTE Meter"])
-timeframe = st.sidebar.selectbox("Select Timeframe:", ["Hourly", "Daily", "Weekly"])
+st.sidebar.title("🛠️ Navigation")
+page = st.sidebar.radio("Select Module:", ["Scanner", "DTE Meter"])
+timeframe = st.sidebar.selectbox("Select Timeframe Interval:", ["Hourly", "Daily", "Weekly"])
 
 interval_map = {"Hourly": Interval.in_1_hour, "Daily": Interval.in_daily, "Weekly": Interval.in_weekly}
 selected_interval = interval_map[timeframe]
-
-# Clear results when switching modules
-if st.sidebar.button("🗑️ Clear Scan Results"):
-    st.session_state.processed_results = []
-    st.session_state.last_index = 0
-    st.session_state.is_running = False
-    st.rerun()
 
 # --- MODULE ROUTING ---
 
 if page == "Scanner":
     st.title("🎯 MFI High-Intensity Scanner")
+    st.markdown("Filters stocks based on **Market Facilitation Index** intensity and price proximity.")
     
-    # 1. Single Stock Entry Field
-    st.subheader("🔍 Single Stock MFI Lookup")
-    quick_sym = st.text_input("Enter NSE Symbol:").strip().upper()
+    # Single Stock Entry Field
+    st.subheader("🔍 Single Stock NSE Lookup")
+    quick_sym = st.text_input("Enter NSE Symbol (e.g., RELIANCE):", key="mfi_quick").strip().upper()
     if quick_sym:
-        tv_quick = get_tv_connection()
-        hist = tv_quick.get_hist(symbol=quick_sym, exchange='NSE', interval=selected_interval, n_bars=100)
-        m = calculate_mfi_strategy(hist)
+        tv = get_tv_connection()
+        hist = tv.get_hist(symbol=quick_sym, exchange='NSE', interval=selected_interval, n_bars=100)
+        m = get_mfi_metrics(hist)
         if m:
-            st.write(f"**Industry:** {get_industry_hybrid(quick_sym, st.session_state.nifty_data_df)}")
+            st.write(f"**Sector:** {get_industry_hybrid(quick_sym, st.session_state.nifty_data_df)}")
             st.table(pd.DataFrame([m]))
             if m['passed_filter']: st.success("✅ Passed Strategy Filters")
     st.divider()
 
 elif page == "DTE Meter":
-    st.title("📊 DTE Meter")
-    # Original DTE Meter single lookup logic
+    st.title("📊 Stock DTE Meter")
+    st.markdown("Identifies price levels projected from **highest volume peaks**.")
+    
     st.subheader("🔍 Quick DTE Lookup")
-    quick_sym = st.text_input("Enter NSE Symbol:").strip().upper()
+    quick_sym = st.text_input("Enter NSE Symbol:", key="dte_quick").strip().upper()
     if quick_sym:
-        tv_quick = get_tv_connection()
-        hist = tv_quick.get_hist(symbol=quick_sym, exchange='NSE', interval=selected_interval, n_bars=100)
+        tv = get_tv_connection()
+        hist = tv.get_hist(symbol=quick_sym, exchange='NSE', interval=selected_interval, n_bars=100)
         d = calculate_dte_metrics(hist)
-        if d: st.table(pd.DataFrame([d]))
+        if d:
+            st.write(f"**Sector:** {get_industry_hybrid(quick_sym, st.session_state.nifty_data_df)}")
+            st.table(pd.DataFrame([d]))
+
     st.divider()
 
-# --- COMMON BATCH SCANNER UI ---
+# --- BATCH SCANNER (Shared UI) ---
 st.subheader("📑 Batch Scanner")
 uploaded_file = st.file_uploader("Upload Symbols Excel", type=["xlsx", "xls"])
 stock_list = []
@@ -192,7 +181,10 @@ elif st.checkbox("Use NIFTY 500 Index"):
 
 if stock_list:
     c1, c2, c3 = st.columns(3)
-    if c1.button("🚀 Start Scanner"): st.session_state.is_running = True
+    if c1.button("🚀 Start Scanner"): 
+        st.session_state.processed_results = []
+        st.session_state.last_index = 0
+        st.session_state.is_running = True
     if c2.button("Pause"): st.session_state.is_running = False
     if c3.button("Reset"):
         st.session_state.processed_results = []; st.session_state.last_index = 0
@@ -211,14 +203,15 @@ if stock_list:
                     if res:
                         st.session_state.processed_results.append({
                             'Symbol': sym, 'Sector': industry, 'Price': res['price'],
-                            'DTE Price': res['dte_lvl'], 'Gap%': res['gap'], 'Date': res['date']
+                            'DTE Price': res['dte_lvl'], 'Gap%': res['gap'], 'Peak Date': res['date']
                         })
-                else:
-                    res = calculate_mfi_strategy(hist)
-                    if res and res['passed_filter']:
+                else: # Scanner Mode
+                    m = get_mfi_metrics(hist)
+                    if m and m['passed_filter']:
                         st.session_state.processed_results.append({
-                            'Symbol': sym, 'Sector': industry, 'Price': res['curr_price'],
-                            'Tip Price': res['tip_price'], 'Color': res['mfi_color'], 'Date': res['date']
+                            'Symbol': sym, 'Sector': industry, 'Price': m['curr_price'],
+                            'Actual @ Max MFI': m['actual_at_mfi'], 'Tip Price': m['tip_price'],
+                            'MFI Color': m['mfi_color'], 'Intensity Diff%': m['diff_pct'], 'Peak Date': m['mfi_date']
                         })
             except: pass
             st.session_state.last_index += 1
@@ -227,3 +220,12 @@ if stock_list:
 
     if st.session_state.processed_results:
         st.dataframe(pd.DataFrame(st.session_state.processed_results), use_container_width=True)
+        
+        # Dynamic Download Filename
+        dl_date = datetime.now().strftime("%Y-%m-%d")
+        filename = f"{page}_Report_{timeframe}_{dl_date}.xlsx"
+        
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            pd.DataFrame(st.session_state.processed_results).to_excel(writer, index=False, sheet_name='Report')
+        st.download_button("💾 Download Results", output.getvalue(), filename)
