@@ -14,7 +14,6 @@ matplotlib.use('Agg')
 st.set_page_config(page_title="Stock Analysis Hub", layout="wide")
 
 # --- INITIALIZE SESSION STATE ---
-# Shared session states for both modules
 if 'processed_results' not in st.session_state:
     st.session_state.processed_results = []
 if 'last_index' not in st.session_state:
@@ -23,8 +22,6 @@ if 'is_running' not in st.session_state:
     st.session_state.is_running = False
 if 'nifty_data_df' not in st.session_state:
     st.session_state.nifty_data_df = pd.DataFrame()
-
-# Track navigation to trigger auto-reset on module change
 if 'current_module' not in st.session_state:
     st.session_state.current_module = "Scanner"
 
@@ -36,6 +33,7 @@ def get_tv_connection():
 
 @st.cache_data
 def fetch_nse_master_data():
+    """Fetches the official Nifty 500 list."""
     url = "https://archives.nseindia.com/content/indices/ind_nifty500list.csv"
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
@@ -47,6 +45,7 @@ def fetch_nse_master_data():
         return pd.DataFrame()
 
 def get_stock_info(sym, master_df):
+    """Retrieves Industry and Nifty 500 status."""
     is_nifty500 = "No"
     industry = "N/A"
     if not master_df.empty and sym in master_df['SYMBOL'].values:
@@ -60,6 +59,7 @@ def get_stock_info(sym, master_df):
     return industry, is_nifty500
 
 def get_tip_price(df, target_series_name, target_idx):
+    """Scales Volume or MFI peaks to the Price axis."""
     try:
         fig, ax1 = plt.subplots()
         ax1.plot(df.index, df['close'])
@@ -78,6 +78,7 @@ def get_tip_price(df, target_series_name, target_idx):
 # --- MODULE CALCULATIONS ---
 
 def calculate_dte_metrics(df):
+    """Volume-based DTE logic."""
     try:
         if df is None or df.empty or len(df) < 15: return None
         current_price = df['close'].iloc[-1]
@@ -88,11 +89,13 @@ def calculate_dte_metrics(df):
     except: return None
 
 def get_mfi_metrics(df):
+    """MFI intensity logic."""
     if df is None or df.empty or len(df) < 2: return None
     df = df.copy()
     current_price = df['close'].iloc[-1]
     df['mfi'] = (df['high'] - df['low']) / df['volume']
     
+    # Bill Williams Coloring
     df['mfi_up'] = df['mfi'] > df['mfi'].shift(1)
     df['vol_up'] = df['volume'] > df['volume'].shift(1)
     def determine_color(row):
@@ -114,8 +117,7 @@ def get_mfi_metrics(df):
         'curr_price': round(current_price, 2), 'actual_at_mfi': round(actual_at_peak, 2),
         'tip_price': round(tip_price, 2), 'prox_pct': round(prox_to_actual, 2),
         'diff_pct': round(tip_to_actual_diff, 2), 'mfi_date': max_mfi_idx.strftime('%Y-%m-%d %H:%M'),
-        'mfi_color': peak_color if 'peak_color' in locals() else df.loc[max_mfi_idx, 'mfi_color'],
-        'passed_filter': is_filtered
+        'mfi_color': df.loc[max_mfi_idx, 'mfi_color'], 'passed_filter': is_filtered
     }
 
 # --- NAVIGATION AREA ---
@@ -124,7 +126,7 @@ if st.session_state.nifty_data_df.empty:
     st.session_state.nifty_data_df = fetch_nse_master_data()
 
 #st.sidebar.title("🛠️ Navigation")
-page = st.sidebar.radio("Functionality Selection", ["Scanner", "DTE Meter"])
+page = st.sidebar.radio("Module selection", ["Scanner", "DTE Meter"])
 
 # Auto-reset results if module changes
 if page != st.session_state.current_module:
@@ -179,7 +181,7 @@ st.divider()
 
 # --- BATCH SCANNER ---
 
-st.subheader("📑 Batch Processing")
+st.subheader("📑 Batch Processor")
 uploaded_file = st.file_uploader("Upload Symbols Excel", type=["xlsx", "xls"])
 stock_list = []
 if uploaded_file:
@@ -191,7 +193,7 @@ elif st.checkbox("Use NIFTY 500 Index"):
 
 if stock_list:
     c1, c2, c3 = st.columns(3)
-    if c1.button("🚀 Start Processer"): 
+    if c1.button("🚀 Start Processing"): 
         st.session_state.processed_results = []; st.session_state.last_index = 0
         st.session_state.is_running = True
     if c2.button("Pause"): st.session_state.is_running = False
@@ -199,10 +201,10 @@ if stock_list:
         st.session_state.processed_results = []; st.session_state.last_index = 0
         st.session_state.is_running = False; st.rerun()
 
-    # DISPLAY RESULTS FIRST (Ensures visibility during rerun)
+    # Results Table (rendered before loop for live updates)
     if st.session_state.processed_results:
         df_display = pd.DataFrame(st.session_state.processed_results)
-        st.dataframe(df_display, use_container_width=True)
+        st.dataframe(df_display, width=1200) # Replaced use_container_width
         dl_date = datetime.now().strftime("%Y-%m-%d")
         filename = f"{page}_Report_{timeframe_label}_{dl_date}.xlsx"
         output = io.BytesIO()
@@ -210,9 +212,9 @@ if stock_list:
             df_display.to_excel(writer, index=False, sheet_name='Report')
         st.download_button("💾 Download Results", output.getvalue(), filename)
 
-    # PROCESSING LOOP
+    # Execution Loop
     if st.session_state.is_running:
-        progress_bar = st.empty() # Create placeholder to prevent double status bars
+        progress_placeholder = st.empty() # Single placeholder to avoid double bars
         tv = get_tv_connection()
         
         while st.session_state.last_index < len(stock_list) and st.session_state.is_running:
@@ -244,7 +246,7 @@ if stock_list:
             except: pass
             
             st.session_state.last_index += 1
-            progress_bar.progress(st.session_state.last_index / len(stock_list))
+            progress_placeholder.progress(st.session_state.last_index / len(stock_list))
             
-            if st.session_state.last_index % 5 == 0: # Rerun frequently for live updates
+            if st.session_state.last_index % 5 == 0: 
                 st.rerun()
