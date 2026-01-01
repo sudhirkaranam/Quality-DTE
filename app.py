@@ -77,7 +77,7 @@ def calculate_all_metrics(df):
     df = df.copy()
     current_price = df['close'].iloc[-1]
     
-    # 1. MFI Calculation & Bill Williams Color logic
+    # MFI Calculation & Bill Williams Color logic
     df['mfi'] = (df['high'] - df['low']) / df['volume']
     df['mfi_up'] = df['mfi'] > df['mfi'].shift(1)
     df['vol_up'] = df['volume'] > df['volume'].shift(1)
@@ -89,11 +89,9 @@ def calculate_all_metrics(df):
         return "Squat"
     df['mfi_color'] = df.apply(get_color, axis=1)
 
-    # 2. Identify Peaks
     max_vol_idx = df['volume'].idxmax()
     max_mfi_idx = df['mfi'].idxmax()
 
-    # 3. Independent Scaling for Vol and MFI
     vol_dte = get_tip_price(df, 'volume', max_vol_idx)
     mfi_tip = get_tip_price(df, 'mfi', max_mfi_idx)
     mfi_at_vol_peak = get_tip_price(df, 'mfi', max_vol_idx)
@@ -133,7 +131,7 @@ if quick_sym:
 
 st.divider()
 
-# Batch Scanner & Excel Upload
+# Batch Scanner Section
 uploaded_file = st.file_uploader("Upload Excel with 'Symbol' column", type=["xlsx", "xls"])
 stock_list = []
 if uploaded_file:
@@ -153,11 +151,15 @@ if stock_list:
         st.session_state.is_running = False
         st.rerun()
 
+    # Progress Bar UI
+    if st.session_state.is_running:
+        progress_text = f"Processing {st.session_state.last_index} of {len(stock_list)} stocks..."
+        progress_bar = st.progress(st.session_state.last_index / len(stock_list), text=progress_text)
+
     if st.session_state.processed_results:
         st.dataframe(pd.DataFrame(st.session_state.processed_results), use_container_width=True)
 
     if st.session_state.is_running and st.session_state.last_index < len(stock_list):
-        progress = st.progress(st.session_state.last_index / len(stock_list))
         while st.session_state.last_index < len(stock_list) and st.session_state.is_running:
             sym = stock_list[st.session_state.last_index].strip().upper()
             row = {'Symbol': sym, 'Industry': get_industry_hybrid(sym, master_data)}
@@ -173,4 +175,9 @@ if stock_list:
                     })
             st.session_state.processed_results.append(row)
             st.session_state.last_index += 1
+            
+            # Update progress bar
+            if st.session_state.is_running:
+                progress_bar.progress(st.session_state.last_index / len(stock_list), text=f"Processing {st.session_state.last_index} of {len(stock_list)} stocks...")
+            
             if st.session_state.last_index % 5 == 0: st.rerun()
