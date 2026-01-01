@@ -47,21 +47,34 @@ def get_industry_hybrid(sym, master_df):
         return "N/A"
 
 def get_mfi_metrics(df):
-    """Calculates MFI Tip vs Actual Price and applies user filters."""
+    """Calculates MFI Tip vs Actual Price, MFI Color, and applies filters."""
     if df is None or df.empty or len(df) < 2: return None
     
     df = df.copy()
     current_price = df['close'].iloc[-1]
     
-    # MFI Calculation: (High - Low) / Volume
+    # 1. MFI Calculation: (High - Low) / Volume
     df['mfi'] = (df['high'] - df['low']) / df['volume']
     
-    # Identify Peak MFI
+    # 2. MFI Coloring Logic (Bill Williams)
+    df['mfi_up'] = df['mfi'] > df['mfi'].shift(1)
+    df['vol_up'] = df['volume'] > df['volume'].shift(1)
+    
+    def determine_color(row):
+        if row['mfi_up'] and row['vol_up']: return "Green"
+        if not row['mfi_up'] and not row['vol_up']: return "Fade"
+        if row['mfi_up'] and not row['vol_up']: return "Fake"
+        return "Squat"
+    
+    df['mfi_color'] = df.apply(determine_color, axis=1)
+    
+    # 3. Identify Peak MFI
     max_mfi_idx = df['mfi'].idxmax()
     highest_mfi_val = df['mfi'].max()
     actual_price_at_peak = df.loc[max_mfi_idx, 'close']
+    peak_color = df.loc[max_mfi_idx, 'mfi_color']
     
-    # Calculate "Price at Tip" via scaling
+    # 4. Calculate "Price at Tip" via scaling
     fig, ax1 = plt.subplots()
     ax1.plot(df.index, df['close'])
     ax2 = ax1.twinx()
@@ -75,9 +88,9 @@ def get_mfi_metrics(df):
     rel_height = (highest_mfi_val - m_min) / m_range
     tip_price = p_min + (rel_height * (p_max - p_min))
     
-    # Filter Logic:
-    # 1. Current Price close to (<2%) Actual Price at highest MFI
-    # 2. Difference between Actual and Tip Price > 15%
+    # 5. Filter Logic:
+    # - Current Price close to (<2%) Actual Price at highest MFI
+    # - Difference between Actual and Tip Price > 15%
     prox_to_actual = abs((current_price - actual_price_at_peak) / actual_price_at_peak) * 100
     tip_to_actual_diff = abs((tip_price - actual_price_at_peak) / actual_price_at_peak) * 100
     
@@ -90,6 +103,7 @@ def get_mfi_metrics(df):
         'prox_pct': round(prox_to_actual, 2),
         'diff_pct': round(tip_to_actual_diff, 2),
         'mfi_date': max_mfi_idx.strftime('%Y-%m-%d %H:%M'),
+        'mfi_color': peak_color,
         'passed_filter': is_filtered
     }
 
@@ -149,6 +163,7 @@ if stock_list:
                         'Current Price': m['curr_price'],
                         'Actual @ Max MFI': m['actual_at_mfi'],
                         'Tip Price @ Max MFI': m['tip_price'],
+                        'MFI Color': m['mfi_color'],
                         'Prox to Actual %': m['prox_pct'],
                         'Tip/Actual Diff %': m['diff_pct'],
                         'Peak Date': m['mfi_date']
@@ -166,7 +181,6 @@ if stock_list:
         df_display = pd.DataFrame(st.session_state.processed_results)
         st.dataframe(df_display, use_container_width=True)
         
-        # Download Option
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             df_display.to_excel(writer, index=False, sheet_name='MFI_Report')
