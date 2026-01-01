@@ -124,7 +124,7 @@ if st.session_state.nifty_data_df.empty:
     st.session_state.nifty_data_df = fetch_nse_master_data()
 
 #st.sidebar.title("🛠️ Navigation")
-page = st.sidebar.radio("Navigation", ["Scanner", "DTE Meter"])
+page = st.sidebar.radio("Functionality Selection", ["Scanner", "DTE Meter"])
 
 # Auto-reset results if module changes
 if page != st.session_state.current_module:
