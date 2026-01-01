@@ -8,14 +8,17 @@ import io
 from datetime import datetime
 import requests
 
+# Setup non-interactive plotting to prevent threading issues
 matplotlib.use('Agg')
 
-# --- Enhanced Helper Functions ---
+st.set_page_config(page_title="Stock DTE & MFI Meter", layout="wide")
+
+# --- CORE LOGIC FUNCTIONS ---
 
 def get_tip_price(df, target_series_name, target_idx):
-    """Calculates the price equivalent for a specific bar's value in a secondary series."""
+    """Calculates the price equivalent for a specific bar's value in a secondary series (Vol or MFI)."""
     try:
-        # We simulate the visual 'tip' logic by scaling the target value to the price axis
+        # Simulate visual 'tip' logic by scaling target value to price axis
         fig, ax1 = plt.subplots()
         ax1.plot(df.index, df['close'])
         ax2 = ax1.twinx()
@@ -35,13 +38,14 @@ def get_tip_price(df, target_series_name, target_idx):
     except:
         return 0
 
-def calculate_metrics(df):
-    if df is None or df.empty or len(df) < 2: return None
+def calculate_combined_metrics(df):
+    """Calculates independent DTE (Volume) and MFI metrics with peak dates and percentages."""
+    if df is None or df.empty or len(df) < 15: return None
     
     df = df.copy()
     current_price = df['close'].iloc[-1]
     
-    # 1. MFI Calculation & Coloring
+    # 1. MFI Calculation & Bill Williams Coloring
     df['mfi'] = (df['high'] - df['low']) / df['volume']
     df['mfi_up'] = df['mfi'] > df['mfi'].shift(1)
     df['vol_up'] = df['volume'] > df['volume'].shift(1)
@@ -50,36 +54,56 @@ def calculate_metrics(df):
         if row['mfi_up'] and row['vol_up']: return "Green"
         if not row['mfi_up'] and not row['vol_up']: return "Fade"
         if row['mfi_up'] and not row['vol_up']: return "Fake"
-        return "Squat" # MFI down, Vol up
+        return "Squat"
     
     df['mfi_color'] = df.apply(get_color, axis=1)
 
-    # 2. Identify Peaks
+    # 2. Identify Peak Indices
     max_vol_idx = df['volume'].idxmax()
     max_mfi_idx = df['mfi'].idxmax()
 
-    # 3. Calculate Tip Prices
+    # 3. Calculate Independent Tip Prices
     vol_dte_price = get_tip_price(df, 'volume', max_vol_idx)
     mfi_dte_price = get_tip_price(df, 'mfi', max_mfi_idx)
-    mfi_at_max_vol_price = get_tip_price(df, 'mfi', max_vol_idx)
+    
+    # NEW: MFI Tip price specifically at the bar where Volume peaked
+    mfi_at_vol_peak_price = get_tip_price(df, 'mfi', max_vol_idx)
 
     return {
         'price': round(current_price, 2),
-        # Volume DTE Details
+        # Volume DTE
         'vol_dte': vol_dte_price,
         'vol_gap_pct': round(((vol_dte_price - current_price) / current_price) * 100, 2),
         'vol_peak_date': max_vol_idx.strftime('%Y-%m-%d'),
-        # MFI DTE Details
+        # MFI DTE
         'mfi_dte': mfi_dte_price,
         'mfi_gap_pct': round(((mfi_dte_price - current_price) / current_price) * 100, 2),
         'mfi_peak_date': max_mfi_idx.strftime('%Y-%m-%d'),
         'mfi_peak_color': df.loc[max_mfi_idx, 'mfi_color'],
-        # Specific Request: MFI Tip at Volume Peak
-        'mfi_at_vol_peak': mfi_at_max_vol_price
+        # Specific Request: MFI Height at Volume Peak
+        'mfi_at_vol_peak': mfi_at_vol_peak_price
     }
 
-# --- Streamlit UI logic remains similar, but uses the new return dictionary ---
-# In the scanner loop, you would map these keys:
-# row_data[f'{lbl}_Vol_DTE'] = metrics['vol_dte']
-# row_data[f'{lbl}_MFI_Tip_at_Max_Vol'] = metrics['mfi_at_vol_peak']
-# row_data[f'{lbl}_MFI_Peak_Color'] = metrics['mfi_peak_color']
+# --- APP UI ---
+
+st.title("📊 Stock DTE & MFI Meter")
+
+# Quick Lookup Section
+quick_sym = st.text_input("Enter NSE Symbol:").strip().upper()
+if quick_sym:
+    tv = TvDatafeed()
+    intervals = {'Daily': Interval.in_daily, 'Weekly': Interval.in_weekly}
+    results = []
+    
+    for lbl, inv in intervals.items():
+        hist = tv.get_hist(symbol=quick_sym, exchange='NSE', interval=inv, n_bars=100)
+        m = calculate_combined_metrics(hist)
+        if m:
+            results.append({
+                "Interval": lbl, "Price": m['price'],
+                "Vol DTE": m['vol_dte'], "Vol Gap%": m['vol_gap_pct'], "Vol Peak Date": m['vol_peak_date'],
+                "MFI Tip": m['mfi_dte'], "MFI Gap%": m['mfi_gap_pct'], "MFI Color": m['mfi_peak_color'], "MFI Peak Date": m['mfi_peak_date'],
+                "MFI @ Vol Peak": m['mfi_at_vol_peak']
+            })
+    if results:
+        st.table(pd.DataFrame(results))
