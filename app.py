@@ -103,12 +103,13 @@ def get_mfi_metrics(df):
     df['mfi_color'] = df.apply(determine_color, axis=1)
     
     max_mfi_idx = df['mfi'].idxmax()
-    actual_price_at_peak = df.loc[max_mfi_idx, 'close']
+    highest_mfi_val = df['mfi'].max()
+    actual_at_peak = df.loc[max_mfi_idx, 'close'] # Corrected variable name
     tip_price = get_tip_price(df, 'mfi', max_mfi_idx)
     
     prox_to_actual = abs((current_price - actual_at_peak) / actual_at_peak) * 100
-    diff_pct = abs((tip_price - actual_at_peak) / actual_at_peak) * 100
-    is_filtered = (prox_to_actual < 2.0) and (diff_pct > 15.0)
+    tip_to_actual_diff = abs((tip_price - actual_at_peak) / actual_at_peak) * 100
+    is_filtered = (prox_to_actual < 2.0) and (tip_to_actual_diff > 15.0)
     
     return {
         'curr_price': round(current_price, 2),
@@ -127,17 +128,24 @@ if st.session_state.nifty_data_df.empty:
     st.session_state.nifty_data_df = fetch_nse_master_data()
 
 st.sidebar.title("🛠️ Navigation")
-page = st.sidebar.radio("Select Module:", ["Scanner", "DTE Meter"])
+# Navigator keeping Scanner first
+page = st.sidebar.radio("Navigation", ["Scanner", "DTE Meter"])
 timeframe = st.sidebar.selectbox("Select Timeframe Interval:", ["Hourly", "Daily", "Weekly"])
 
 interval_map = {"Hourly": Interval.in_1_hour, "Daily": Interval.in_daily, "Weekly": Interval.in_weekly}
 selected_interval = interval_map[timeframe]
 
+# Reset process state when switching modules
+if st.sidebar.button("🗑️ Reset Application State"):
+    st.session_state.processed_results = []
+    st.session_state.last_index = 0
+    st.session_state.is_running = False
+    st.rerun()
+
 # --- MODULE ROUTING ---
 
 if page == "Scanner":
     st.title("🎯 MFI High-Intensity Scanner")
-    st.markdown("Filters stocks based on **Market Facilitation Index** intensity and price proximity.")
     
     # Single Stock Entry Field
     st.subheader("🔍 Single Stock NSE Lookup")
@@ -154,7 +162,6 @@ if page == "Scanner":
 
 elif page == "DTE Meter":
     st.title("📊 Stock DTE Meter")
-    st.markdown("Identifies price levels projected from **highest volume peaks**.")
     
     st.subheader("🔍 Quick DTE Lookup")
     quick_sym = st.text_input("Enter NSE Symbol:", key="dte_quick").strip().upper()
@@ -165,7 +172,6 @@ elif page == "DTE Meter":
         if d:
             st.write(f"**Sector:** {get_industry_hybrid(quick_sym, st.session_state.nifty_data_df)}")
             st.table(pd.DataFrame([d]))
-
     st.divider()
 
 # --- BATCH SCANNER (Shared UI) ---
