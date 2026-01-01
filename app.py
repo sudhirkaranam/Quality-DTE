@@ -23,11 +23,12 @@ if 'is_running' not in st.session_state:
 
 @st.cache_resource
 def get_tv_connection():
-    """Initializes and caches the TradingView connection to prevent hanging."""
+    """Initializes and caches the TradingView connection."""
     return TvDatafeed()
 
 @st.cache_data
 def fetch_nse_master_data():
+    """Fetches the official Nifty 500 list with Industry classification."""
     url = "https://archives.nseindia.com/content/indices/ind_nifty500list.csv"
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
@@ -37,6 +38,16 @@ def fetch_nse_master_data():
         return df
     except:
         return pd.DataFrame()
+
+def get_industry_hybrid(sym, master_df):
+    """Priority 1: NSE Master List | Priority 2: Yahoo Finance."""
+    if not master_df.empty and sym in master_df['SYMBOL'].values:
+        return master_df[master_df['SYMBOL'] == sym]['INDUSTRY'].values[0]
+    try:
+        ticker = yf.Ticker(f"{sym}.NS")
+        return ticker.info.get('sector', 'N/A')
+    except:
+        return "N/A"
 
 # --- Core Calculation Logic ---
 
@@ -108,6 +119,7 @@ st.title("📊 Complete Stock DTE & MFI Meter")
 # Quick Lookup Section
 quick_sym = st.text_input("Enter NSE Symbol:").strip().upper()
 if quick_sym:
+    industry = get_industry_hybrid(quick_sym, master_data)
     q_res = []
     for lbl, inv in {'Daily': Interval.in_daily, 'Weekly': Interval.in_weekly}.items():
         hist = tv.get_hist(symbol=quick_sym, exchange='NSE', interval=inv, n_bars=100)
@@ -116,6 +128,7 @@ if quick_sym:
             m.update({"Interval": lbl})
             q_res.append(m)
     if q_res:
+        st.metric("Sector / Industry (NSE)", industry)
         st.table(pd.DataFrame(q_res))
 
 st.divider()
@@ -147,7 +160,7 @@ if stock_list:
         progress = st.progress(st.session_state.last_index / len(stock_list))
         while st.session_state.last_index < len(stock_list) and st.session_state.is_running:
             sym = stock_list[st.session_state.last_index].strip().upper()
-            row = {'Symbol': sym}
+            row = {'Symbol': sym, 'Industry': get_industry_hybrid(sym, master_data)}
             for lbl, inv in {'D': Interval.in_daily, 'W': Interval.in_weekly}.items():
                 hist = tv.get_hist(symbol=sym, exchange='NSE', interval=inv, n_bars=100)
                 m = calculate_all_metrics(hist)
