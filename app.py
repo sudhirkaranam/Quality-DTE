@@ -119,8 +119,8 @@ def get_mfi_metrics(df):
 if st.session_state.nifty_data_df.empty:
     st.session_state.nifty_data_df = fetch_nse_master_data()
 
-st.sidebar.title("🛠️ Navigation")
-page = st.sidebar.radio("Navigation", ["Scanner", "DTE Meter"])
+#st.sidebar.title("🛠️ Navigation")
+page = st.sidebar.radio("Select a Module", ["Scanner", "DTE Meter"])
 
 # Auto-reset if module changes
 if page != st.session_state.current_module:
@@ -142,7 +142,7 @@ else:
 # --- MAIN UI ---
 
 if page == "Scanner":
-    st.title("🎯 MFI High-Intensity Scanner")
+    st.title("🎯 MFI Scanner")
     st.subheader("🔍 Single Stock NSE Lookup")
     quick_sym = st.text_input("Enter NSE Symbol:", key="mfi_quick").strip().upper()
     if quick_sym:
@@ -175,7 +175,7 @@ st.divider()
 
 # --- BATCH SCANNER ---
 
-st.subheader("📑 Batch Scanner")
+st.subheader("📑 Batch Processor")
 uploaded_file = st.file_uploader("Upload Symbols Excel", type=["xlsx", "xls"])
 stock_list = []
 if uploaded_file:
@@ -187,7 +187,7 @@ elif st.checkbox("Use NIFTY 500 Index"):
 
 if stock_list:
     c1, c2, c3 = st.columns(3)
-    if c1.button("🚀 Start Scanner"): 
+    if c1.button("🚀 Start Processing"): 
         st.session_state.processed_results = []; st.session_state.last_index = 0
         st.session_state.is_running = True
     if c2.button("Pause"): st.session_state.is_running = False
