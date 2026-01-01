@@ -103,8 +103,7 @@ def get_mfi_metrics(df):
     df['mfi_color'] = df.apply(determine_color, axis=1)
     
     max_mfi_idx = df['mfi'].idxmax()
-    highest_mfi_val = df['mfi'].max()
-    actual_at_peak = df.loc[max_mfi_idx, 'close'] # Corrected variable name
+    actual_at_peak = df.loc[max_mfi_idx, 'close']
     tip_price = get_tip_price(df, 'mfi', max_mfi_idx)
     
     prox_to_actual = abs((current_price - actual_at_peak) / actual_at_peak) * 100
@@ -128,28 +127,26 @@ if st.session_state.nifty_data_df.empty:
     st.session_state.nifty_data_df = fetch_nse_master_data()
 
 st.sidebar.title("🛠️ Navigation")
-# Navigator keeping Scanner first
-page = st.sidebar.radio("Navigation", ["Scanner", "DTE Meter"])
-timeframe = st.sidebar.selectbox("Select Timeframe Interval:", ["Hourly", "Daily", "Weekly"])
+page = st.sidebar.radio("Select Module:", ["Scanner", "DTE Meter"])
 
-interval_map = {"Hourly": Interval.in_1_hour, "Daily": Interval.in_daily, "Weekly": Interval.in_weekly}
-selected_interval = interval_map[timeframe]
-
-# Reset process state when switching modules
-if st.sidebar.button("🗑️ Reset Application State"):
-    st.session_state.processed_results = []
-    st.session_state.last_index = 0
-    st.session_state.is_running = False
-    st.rerun()
+# Timeframe is DISABLED (non-selectable) for DTE Meter
+if page == "DTE Meter":
+    st.sidebar.info("⏳ Timeframe: Daily & Weekly (Fixed)")
+    selected_interval = None # Not used for batch scan in DTE mode
+    timeframe_label = "Fixed_D_W"
+else:
+    timeframe_label = st.sidebar.selectbox("Select Timeframe Interval:", ["Hourly", "Daily", "Weekly"])
+    interval_map = {"Hourly": Interval.in_1_hour, "Daily": Interval.in_daily, "Weekly": Interval.in_weekly}
+    selected_interval = interval_map[timeframe_label]
 
 # --- MODULE ROUTING ---
 
 if page == "Scanner":
     st.title("🎯 MFI High-Intensity Scanner")
+    st.markdown("Filters stocks based on **Market Facilitation Index** intensity and price proximity.")
     
-    # Single Stock Entry Field
     st.subheader("🔍 Single Stock NSE Lookup")
-    quick_sym = st.text_input("Enter NSE Symbol (e.g., RELIANCE):", key="mfi_quick").strip().upper()
+    quick_sym = st.text_input("Enter NSE Symbol:", key="mfi_quick").strip().upper()
     if quick_sym:
         tv = get_tv_connection()
         hist = tv.get_hist(symbol=quick_sym, exchange='NSE', interval=selected_interval, n_bars=100)
@@ -162,19 +159,25 @@ if page == "Scanner":
 
 elif page == "DTE Meter":
     st.title("📊 Stock DTE Meter")
+    st.markdown("Analyzes **Daily and Weekly** volume peaks simultaneously.")
     
     st.subheader("🔍 Quick DTE Lookup")
     quick_sym = st.text_input("Enter NSE Symbol:", key="dte_quick").strip().upper()
     if quick_sym:
         tv = get_tv_connection()
-        hist = tv.get_hist(symbol=quick_sym, exchange='NSE', interval=selected_interval, n_bars=100)
-        d = calculate_dte_metrics(hist)
-        if d:
+        q_res = []
+        for lbl, tint in {'Daily': Interval.in_daily, 'Weekly': Interval.in_weekly}.items():
+            hist = tv.get_hist(symbol=quick_sym, exchange='NSE', interval=tint, n_bars=100)
+            d = calculate_dte_metrics(hist)
+            if d:
+                d.update({"Interval": lbl})
+                q_res.append(d)
+        if q_res:
             st.write(f"**Sector:** {get_industry_hybrid(quick_sym, st.session_state.nifty_data_df)}")
-            st.table(pd.DataFrame([d]))
+            st.table(pd.DataFrame(q_res))
     st.divider()
 
-# --- BATCH SCANNER (Shared UI) ---
+# --- BATCH SCANNER ---
 st.subheader("📑 Batch Scanner")
 uploaded_file = st.file_uploader("Upload Symbols Excel", type=["xlsx", "xls"])
 stock_list = []
@@ -203,15 +206,23 @@ if stock_list:
             sym = stock_list[st.session_state.last_index].strip().upper()
             industry = get_industry_hybrid(sym, st.session_state.nifty_data_df)
             try:
-                hist = tv.get_hist(symbol=sym, exchange='NSE', interval=selected_interval, n_bars=100)
                 if page == "DTE Meter":
-                    res = calculate_dte_metrics(hist)
-                    if res:
-                        st.session_state.processed_results.append({
-                            'Symbol': sym, 'Sector': industry, 'Price': res['price'],
-                            'DTE Price': res['dte_lvl'], 'Gap%': res['gap'], 'Peak Date': res['date']
-                        })
-                else: # Scanner Mode
+                    metrics = {}
+                    cp = 0
+                    for lbl, tint in {'D': Interval.in_daily, 'W': Interval.in_weekly}.items():
+                        hist = tv.get_hist(symbol=sym, exchange='NSE', interval=tint, n_bars=100)
+                        d = calculate_dte_metrics(hist)
+                        if d:
+                            metrics[f'{lbl}_Price'] = d['dte_lvl']
+                            metrics[f'{lbl}_Gap%'] = d['gap']
+                            cp = d['price']
+                    st.session_state.processed_results.append({
+                        'Symbol': sym, 'Sector': industry, 'Price': cp,
+                        'D_DTE': metrics.get('D_Price', 0), 'D_Gap%': metrics.get('D_Gap%', 0),
+                        'W_DTE': metrics.get('W_Price', 0), 'W_Gap%': metrics.get('W_Gap%', 0)
+                    })
+                else: # Scanner Mode (MFI)
+                    hist = tv.get_hist(symbol=sym, exchange='NSE', interval=selected_interval, n_bars=100)
                     m = get_mfi_metrics(hist)
                     if m and m['passed_filter']:
                         st.session_state.processed_results.append({
@@ -226,11 +237,8 @@ if stock_list:
 
     if st.session_state.processed_results:
         st.dataframe(pd.DataFrame(st.session_state.processed_results), use_container_width=True)
-        
-        # Dynamic Download Filename
         dl_date = datetime.now().strftime("%Y-%m-%d")
-        filename = f"{page}_Report_{timeframe}_{dl_date}.xlsx"
-        
+        filename = f"{page}_Report_{timeframe_label}_{dl_date}.xlsx"
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             pd.DataFrame(st.session_state.processed_results).to_excel(writer, index=False, sheet_name='Report')
