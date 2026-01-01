@@ -138,7 +138,7 @@ if st.sidebar.button("🗑️ Clear All Scan Results"):
     st.rerun()
 
 # --- PAGE 1: DTE METER ---
-if page == "DTE Meter (Volume-based)":
+if page == "DTE Meter":
     st.title("📊 Stock DTE Meter")
     st.markdown("Identifies price levels projected from the **highest volume peaks**.")
     
