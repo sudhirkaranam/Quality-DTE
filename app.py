@@ -8,7 +8,7 @@ import io
 from datetime import datetime
 import requests
 
-# Setup non-interactive plotting
+# Setup non-interactive plotting to prevent threading issues
 matplotlib.use('Agg')
 
 st.set_page_config(page_title="Stock Analysis Hub", layout="wide")
@@ -27,11 +27,12 @@ if 'nifty_data_df' not in st.session_state:
 
 @st.cache_resource
 def get_tv_connection():
+    """Initializes and caches the TradingView connection."""
     return TvDatafeed()
 
 @st.cache_data
 def fetch_nse_master_data():
-    """Fetches the official Nifty 500 list with Industry classification."""
+    """Fetches official Nifty 500 list with Industry classification."""
     url = "https://archives.nseindia.com/content/indices/ind_nifty500list.csv"
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
@@ -53,7 +54,7 @@ def get_industry_hybrid(sym, master_df):
         return "N/A"
 
 def get_tip_price(df, target_series_name, target_idx):
-    """Generic helper to scale Volume or MFI to the Price axis."""
+    """Scales Volume or MFI peaks to the Price axis."""
     try:
         fig, ax1 = plt.subplots()
         ax1.plot(df.index, df['close'])
@@ -62,6 +63,7 @@ def get_tip_price(df, target_series_name, target_idx):
         p_min, p_max = ax1.get_ylim()
         s_min, s_max = ax2.get_ylim()
         plt.close(fig)
+        
         val = df.loc[target_idx, target_series_name]
         s_range = (s_max - s_min)
         if s_range == 0: return 0
@@ -80,13 +82,18 @@ def calculate_dte_metrics(df):
         max_vol_idx = df['volume'].idxmax()
         dte_price = get_tip_price(df, 'volume', max_vol_idx)
         percent_gap = ((dte_price - current_price) / current_price) * 100
-        return {'gap': round(percent_gap, 2), 'price': round(current_price, 2), 'dte_lvl': dte_price, 'date': max_vol_idx.strftime('%Y-%m-%d')}
+        return {
+            'gap': round(percent_gap, 2), 
+            'price': round(current_price, 2), 
+            'dte_lvl': dte_price, 
+            'date': max_vol_idx.strftime('%Y-%m-%d')
+        }
     except: return None
 
 # --- MODULE 2: MFI LOGIC ---
 
 def get_mfi_metrics(df):
-    """Calculates MFI Tip vs Actual Price and applies filters."""
+    """Calculates MFI Tip vs Actual Price and applies proximity/intensity filters."""
     if df is None or df.empty or len(df) < 2: return None
     df = df.copy()
     current_price = df['close'].iloc[-1]
@@ -121,32 +128,38 @@ def get_mfi_metrics(df):
         'passed_filter': is_filtered
     }
 
-# --- NAVIGATION ---
+# --- NAVIGATION & SIDEBAR ---
 
 if st.session_state.nifty_data_df.empty:
     st.session_state.nifty_data_df = fetch_nse_master_data()
 
 st.sidebar.title("🛠️ Navigation")
-page = st.sidebar.radio("Select Module:", ["Scanner", "DTE Meter"])
+# Scanner is the first option in the navigator
+page = st.sidebar.radio("Navigation", ["Scanner", "DTE Meter"])
 
-# Timeframe is DISABLED (non-selectable) for DTE Meter
 if page == "DTE Meter":
     st.sidebar.info("⏳ Timeframe: Daily & Weekly (Fixed)")
-    selected_interval = None # Not used for batch scan in DTE mode
-    timeframe_label = "Fixed_D_W"
+    timeframe_label = "Daily_Weekly"
+    selected_interval = None
 else:
     timeframe_label = st.sidebar.selectbox("Select Timeframe Interval:", ["Hourly", "Daily", "Weekly"])
     interval_map = {"Hourly": Interval.in_1_hour, "Daily": Interval.in_daily, "Weekly": Interval.in_weekly}
     selected_interval = interval_map[timeframe_label]
 
+if st.sidebar.button("🗑️ Reset All Results"):
+    st.session_state.processed_results = []
+    st.session_state.last_index = 0
+    st.session_state.is_running = False
+    st.rerun()
+
 # --- MODULE ROUTING ---
 
 if page == "Scanner":
     st.title("🎯 MFI High-Intensity Scanner")
-    st.markdown("Filters stocks based on **Market Facilitation Index** intensity and price proximity.")
+    st.markdown("Filters stocks based on **Market Facilitation Index** intensity (>15%) and price proximity (<2%).")
     
     st.subheader("🔍 Single Stock NSE Lookup")
-    quick_sym = st.text_input("Enter NSE Symbol:", key="mfi_quick").strip().upper()
+    quick_sym = st.text_input("Enter NSE Symbol (e.g., RELIANCE):", key="mfi_quick").strip().upper()
     if quick_sym:
         tv = get_tv_connection()
         hist = tv.get_hist(symbol=quick_sym, exchange='NSE', interval=selected_interval, n_bars=100)
@@ -159,7 +172,7 @@ if page == "Scanner":
 
 elif page == "DTE Meter":
     st.title("📊 Stock DTE Meter")
-    st.markdown("Analyzes **Daily and Weekly** volume peaks simultaneously.")
+    st.markdown("Identifies price levels projected from **highest volume peaks** on Daily and Weekly charts.")
     
     st.subheader("🔍 Quick DTE Lookup")
     quick_sym = st.text_input("Enter NSE Symbol:", key="dte_quick").strip().upper()
@@ -177,7 +190,8 @@ elif page == "DTE Meter":
             st.table(pd.DataFrame(q_res))
     st.divider()
 
-# --- BATCH SCANNER ---
+# --- SHARED BATCH SCANNER ---
+
 st.subheader("📑 Batch Scanner")
 uploaded_file = st.file_uploader("Upload Symbols Excel", type=["xlsx", "xls"])
 stock_list = []
@@ -200,28 +214,26 @@ if stock_list:
         st.session_state.is_running = False; st.rerun()
 
     if st.session_state.is_running:
-        tv = get_tv_connection()
         progress_bar = st.progress(st.session_state.last_index / len(stock_list))
+        tv = get_tv_connection()
+        
         while st.session_state.last_index < len(stock_list) and st.session_state.is_running:
             sym = stock_list[st.session_state.last_index].strip().upper()
             industry = get_industry_hybrid(sym, st.session_state.nifty_data_df)
             try:
                 if page == "DTE Meter":
-                    metrics = {}
-                    cp = 0
+                    metrics, cp = {}, 0
                     for lbl, tint in {'D': Interval.in_daily, 'W': Interval.in_weekly}.items():
                         hist = tv.get_hist(symbol=sym, exchange='NSE', interval=tint, n_bars=100)
                         d = calculate_dte_metrics(hist)
                         if d:
-                            metrics[f'{lbl}_Price'] = d['dte_lvl']
-                            metrics[f'{lbl}_Gap%'] = d['gap']
-                            cp = d['price']
+                            metrics[f'{lbl}_Price'], metrics[f'{lbl}_Gap%'], cp = d['dte_lvl'], d['gap'], d['price']
                     st.session_state.processed_results.append({
                         'Symbol': sym, 'Sector': industry, 'Price': cp,
                         'D_DTE': metrics.get('D_Price', 0), 'D_Gap%': metrics.get('D_Gap%', 0),
                         'W_DTE': metrics.get('W_Price', 0), 'W_Gap%': metrics.get('W_Gap%', 0)
                     })
-                else: # Scanner Mode (MFI)
+                else:
                     hist = tv.get_hist(symbol=sym, exchange='NSE', interval=selected_interval, n_bars=100)
                     m = get_mfi_metrics(hist)
                     if m and m['passed_filter']:
@@ -231,12 +243,14 @@ if stock_list:
                             'MFI Color': m['mfi_color'], 'Intensity Diff%': m['diff_pct'], 'Peak Date': m['mfi_date']
                         })
             except: pass
+            
             st.session_state.last_index += 1
             progress_bar.progress(st.session_state.last_index / len(stock_list))
             if st.session_state.last_index % 10 == 0: st.rerun()
 
     if st.session_state.processed_results:
         st.dataframe(pd.DataFrame(st.session_state.processed_results), use_container_width=True)
+        
         dl_date = datetime.now().strftime("%Y-%m-%d")
         filename = f"{page}_Report_{timeframe_label}_{dl_date}.xlsx"
         output = io.BytesIO()
