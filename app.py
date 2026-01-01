@@ -11,7 +11,7 @@ import requests
 # Setup non-interactive plotting
 matplotlib.use('Agg')
 
-st.set_page_config(page_title="Stock DTE & MFI Meter", layout="wide")
+st.set_page_config(page_title="Mod Stock DTE & MFI Meter", layout="wide")
 
 # --- CORE CALCULATION LOGIC ---
 
