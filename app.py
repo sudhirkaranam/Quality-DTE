@@ -78,11 +78,11 @@ def calculate_all_metrics(df):
         return "Squat"
     df['mfi_color'] = df.apply(get_color, axis=1)
 
-    # 2. Peaks
+    # 2. Identify Peaks
     max_vol_idx = df['volume'].idxmax()
     max_mfi_idx = df['mfi'].idxmax()
 
-    # 3. Independent Scaling
+    # 3. Independent Scaling for Vol and MFI
     vol_dte = get_tip_price(df, 'volume', max_vol_idx)
     mfi_tip = get_tip_price(df, 'mfi', max_mfi_idx)
     mfi_at_vol_peak = get_tip_price(df, 'mfi', max_vol_idx)
@@ -105,7 +105,7 @@ tv = get_tv_connection()
 
 st.title("📊 Complete Stock DTE & MFI Meter")
 
-# Quick Lookup
+# Quick Lookup Section
 quick_sym = st.text_input("Enter NSE Symbol:").strip().upper()
 if quick_sym:
     q_res = []
@@ -120,25 +120,44 @@ if quick_sym:
 
 st.divider()
 
-# Batch Scanner
-uploaded_file = st.file_uploader("Upload Excel", type=["xlsx", "xls"])
+# Batch Scanner & Excel Upload
+uploaded_file = st.file_uploader("Upload Excel with 'Symbol' column", type=["xlsx", "xls"])
 stock_list = []
 if uploaded_file:
     df_in = pd.read_excel(uploaded_file)
     sym_col = next((c for c in df_in.columns if c.lower() == 'symbol'), None)
     if sym_col: stock_list = df_in[sym_col].dropna().astype(str).tolist()
-elif st.checkbox("Use NIFTY 500"):
+elif st.checkbox("Use NIFTY 500 Index"):
     stock_list = master_data['SYMBOL'].tolist() if not master_data.empty else []
 
 if stock_list:
     c1, c2, c3 = st.columns(3)
-    if c1.button("🚀 Start"): st.session_state.is_running = True
+    if c1.button("🚀 Start/Resume"): st.session_state.is_running = True
     if c2.button("Pause"): st.session_state.is_running = False
-    if c3.button("Reset"):
+    if c3.button("Reset Scanner"):
         st.session_state.processed_results = []
         st.session_state.last_index = 0
         st.session_state.is_running = False
         st.rerun()
 
     if st.session_state.processed_results:
-        st.dataframe(pd.DataFrame(st.
+        st.dataframe(pd.DataFrame(st.session_state.processed_results), use_container_width=True)
+
+    if st.session_state.is_running and st.session_state.last_index < len(stock_list):
+        progress = st.progress(st.session_state.last_index / len(stock_list))
+        while st.session_state.last_index < len(stock_list) and st.session_state.is_running:
+            sym = stock_list[st.session_state.last_index].strip().upper()
+            row = {'Symbol': sym}
+            for lbl, inv in {'D': Interval.in_daily, 'W': Interval.in_weekly}.items():
+                hist = tv.get_hist(symbol=sym, exchange='NSE', interval=inv, n_bars=100)
+                m = calculate_all_metrics(hist)
+                if m:
+                    row.update({
+                        f'{lbl}_Price': m['price'],
+                        f'{lbl}_Vol_DTE': m['vol_dte'], f'{lbl}_Vol_Gap%': m['vol_gap'], f'{lbl}_Vol_Date': m['vol_date'],
+                        f'{lbl}_MFI_Tip': m['mfi_tip'], f'{lbl}_MFI_Gap%': m['mfi_gap'], f'{lbl}_MFI_Color': m['mfi_color'],
+                        f'{lbl}_MFI_Date': m['mfi_date'], f'{lbl}_MFI@VolPeak': m['mfi_at_vol_peak']
+                    })
+            st.session_state.processed_results.append(row)
+            st.session_state.last_index += 1
+            if st.session_state.last_index % 5 == 0: st.rerun()
