@@ -89,7 +89,7 @@ def calculate_dte_metrics(df):
     except: return None
 
 def get_mfi_metrics(df):
-    """MFI intensity logic."""
+    """MFI intensity logic with proximity/intensity filters."""
     if df is None or df.empty or len(df) < 2: return None
     df = df.copy()
     current_price = df['close'].iloc[-1]
@@ -125,8 +125,8 @@ def get_mfi_metrics(df):
 if st.session_state.nifty_data_df.empty:
     st.session_state.nifty_data_df = fetch_nse_master_data()
 
-#st.sidebar.title("🛠️ Navigation")
-page = st.sidebar.radio("Module selection", ["Scanner", "DTE Meter"])
+st.sidebar.title("🛠️ Navigation")
+page = st.sidebar.radio("Navigation", ["Scanner", "DTE Meter"])
 
 # Auto-reset results if module changes
 if page != st.session_state.current_module:
@@ -148,7 +148,7 @@ else:
 # --- MAIN MODULE INTERFACE ---
 
 if page == "Scanner":
-    st.title("🎯 MFI Scanner")
+    st.title("🎯 MFI High-Intensity Scanner")
     st.subheader("🔍 Single Stock NSE Lookup")
     quick_sym = st.text_input("Enter NSE Symbol:", key="mfi_quick").strip().upper()
     if quick_sym:
@@ -181,7 +181,7 @@ st.divider()
 
 # --- BATCH SCANNER ---
 
-st.subheader("📑 Batch Processor")
+st.subheader("📑 Batch Scanner")
 uploaded_file = st.file_uploader("Upload Symbols Excel", type=["xlsx", "xls"])
 stock_list = []
 if uploaded_file:
@@ -193,7 +193,7 @@ elif st.checkbox("Use NIFTY 500 Index"):
 
 if stock_list:
     c1, c2, c3 = st.columns(3)
-    if c1.button("🚀 Start Processing"): 
+    if c1.button("🚀 Start Scanner"): 
         st.session_state.processed_results = []; st.session_state.last_index = 0
         st.session_state.is_running = True
     if c2.button("Pause"): st.session_state.is_running = False
@@ -201,10 +201,11 @@ if stock_list:
         st.session_state.processed_results = []; st.session_state.last_index = 0
         st.session_state.is_running = False; st.rerun()
 
-    # Results Table (rendered before loop for live updates)
+    # --- CRITICAL FIX: DISPLAY RESULTS BEFORE PROCESSING LOOP ---
     if st.session_state.processed_results:
         df_display = pd.DataFrame(st.session_state.processed_results)
-        st.dataframe(df_display, width=1200) # Replaced use_container_width
+        st.dataframe(df_display, width=1200) # Compatible with 2026 streamlit
+        
         dl_date = datetime.now().strftime("%Y-%m-%d")
         filename = f"{page}_Report_{timeframe_label}_{dl_date}.xlsx"
         output = io.BytesIO()
@@ -212,9 +213,10 @@ if stock_list:
             df_display.to_excel(writer, index=False, sheet_name='Report')
         st.download_button("💾 Download Results", output.getvalue(), filename)
 
-    # Execution Loop
+    # --- PROCESSING LOOP ---
     if st.session_state.is_running:
-        progress_placeholder = st.empty() # Single placeholder to avoid double bars
+        # Use a placeholder to prevent "double status bar"
+        progress_placeholder = st.empty() 
         tv = get_tv_connection()
         
         while st.session_state.last_index < len(stock_list) and st.session_state.is_running:
@@ -223,6 +225,7 @@ if stock_list:
             
             try:
                 if page == "DTE Meter":
+                    # Fix: DTE logic handles D and W intervals simultaneously
                     metrics, cp = {}, 0
                     for lbl, tint in {'D': Interval.in_daily, 'W': Interval.in_weekly}.items():
                         hist = tv.get_hist(symbol=sym, exchange='NSE', interval=tint, n_bars=100)
@@ -234,7 +237,7 @@ if stock_list:
                         'D_DTE': metrics.get('D_Price', 0), 'D_Gap%': metrics.get('D_Gap%', 0),
                         'W_DTE': metrics.get('W_Price', 0), 'W_Gap%': metrics.get('W_Gap%', 0)
                     })
-                else: # MFI Mode
+                else: # Scanner Mode (MFI)
                     hist = tv.get_hist(symbol=sym, exchange='NSE', interval=selected_interval, n_bars=100)
                     m = get_mfi_metrics(hist)
                     if m and m['passed_filter']:
@@ -248,5 +251,6 @@ if stock_list:
             st.session_state.last_index += 1
             progress_placeholder.progress(st.session_state.last_index / len(stock_list))
             
+            # Update UI every 5 stocks to ensure results remain visible during rerun
             if st.session_state.last_index % 5 == 0: 
                 st.rerun()
