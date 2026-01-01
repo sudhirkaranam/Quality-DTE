@@ -33,7 +33,6 @@ def get_tv_connection():
 
 @st.cache_data
 def fetch_nse_master_data():
-    """Fetches the official Nifty 500 list."""
     url = "https://archives.nseindia.com/content/indices/ind_nifty500list.csv"
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
@@ -45,7 +44,6 @@ def fetch_nse_master_data():
         return pd.DataFrame()
 
 def get_stock_info(sym, master_df):
-    """Retrieves Industry and Nifty 500 status."""
     is_nifty500 = "No"
     industry = "N/A"
     if not master_df.empty and sym in master_df['SYMBOL'].values:
@@ -59,7 +57,6 @@ def get_stock_info(sym, master_df):
     return industry, is_nifty500
 
 def get_tip_price(df, target_series_name, target_idx):
-    """Scales Volume or MFI peaks to the Price axis."""
     try:
         fig, ax1 = plt.subplots()
         ax1.plot(df.index, df['close'])
@@ -78,7 +75,6 @@ def get_tip_price(df, target_series_name, target_idx):
 # --- MODULE CALCULATIONS ---
 
 def calculate_dte_metrics(df):
-    """Volume-based DTE logic."""
     try:
         if df is None or df.empty or len(df) < 15: return None
         current_price = df['close'].iloc[-1]
@@ -89,13 +85,11 @@ def calculate_dte_metrics(df):
     except: return None
 
 def get_mfi_metrics(df):
-    """MFI intensity logic with proximity/intensity filters."""
     if df is None or df.empty or len(df) < 2: return None
     df = df.copy()
     current_price = df['close'].iloc[-1]
     df['mfi'] = (df['high'] - df['low']) / df['volume']
     
-    # Bill Williams Coloring
     df['mfi_up'] = df['mfi'] > df['mfi'].shift(1)
     df['vol_up'] = df['volume'] > df['volume'].shift(1)
     def determine_color(row):
@@ -128,7 +122,7 @@ if st.session_state.nifty_data_df.empty:
 st.sidebar.title("🛠️ Navigation")
 page = st.sidebar.radio("Navigation", ["Scanner", "DTE Meter"])
 
-# Auto-reset results if module changes
+# Auto-reset if module changes
 if page != st.session_state.current_module:
     st.session_state.processed_results = []
     st.session_state.last_index = 0
@@ -145,7 +139,7 @@ else:
     interval_map = {"Hourly": Interval.in_1_hour, "Daily": Interval.in_daily, "Weekly": Interval.in_weekly}
     selected_interval = interval_map[timeframe_label]
 
-# --- MAIN MODULE INTERFACE ---
+# --- MAIN UI ---
 
 if page == "Scanner":
     st.title("🎯 MFI High-Intensity Scanner")
@@ -201,31 +195,31 @@ if stock_list:
         st.session_state.processed_results = []; st.session_state.last_index = 0
         st.session_state.is_running = False; st.rerun()
 
-    # --- CRITICAL FIX: DISPLAY RESULTS BEFORE PROCESSING LOOP ---
+    # --- THE FIX: PLACEHOLDERS FOR PERSISTENT UI ---
+    progress_placeholder = st.empty()
+    table_placeholder = st.empty()
+    download_placeholder = st.empty()
+
+    # Show existing data immediately upon rerun
     if st.session_state.processed_results:
         df_display = pd.DataFrame(st.session_state.processed_results)
-        st.dataframe(df_display, width=1200) # Compatible with 2026 streamlit
+        table_placeholder.dataframe(df_display, width=1200)
         
         dl_date = datetime.now().strftime("%Y-%m-%d")
         filename = f"{page}_Report_{timeframe_label}_{dl_date}.xlsx"
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             df_display.to_excel(writer, index=False, sheet_name='Report')
-        st.download_button("💾 Download Results", output.getvalue(), filename)
+        download_placeholder.download_button("💾 Download Results", output.getvalue(), filename)
 
-    # --- PROCESSING LOOP ---
-    if st.session_state.is_running:
-        # Use a placeholder to prevent "double status bar"
-        progress_placeholder = st.empty() 
+    # PROCESSOR
+    if st.session_state.is_running and st.session_state.last_index < len(stock_list):
         tv = get_tv_connection()
-        
         while st.session_state.last_index < len(stock_list) and st.session_state.is_running:
             sym = stock_list[st.session_state.last_index].strip().upper()
             industry, is_n500 = get_stock_info(sym, st.session_state.nifty_data_df)
-            
             try:
                 if page == "DTE Meter":
-                    # Fix: DTE logic handles D and W intervals simultaneously
                     metrics, cp = {}, 0
                     for lbl, tint in {'D': Interval.in_daily, 'W': Interval.in_weekly}.items():
                         hist = tv.get_hist(symbol=sym, exchange='NSE', interval=tint, n_bars=100)
@@ -237,7 +231,7 @@ if stock_list:
                         'D_DTE': metrics.get('D_Price', 0), 'D_Gap%': metrics.get('D_Gap%', 0),
                         'W_DTE': metrics.get('W_Price', 0), 'W_Gap%': metrics.get('W_Gap%', 0)
                     })
-                else: # Scanner Mode (MFI)
+                else: # MFI Mode
                     hist = tv.get_hist(symbol=sym, exchange='NSE', interval=selected_interval, n_bars=100)
                     m = get_mfi_metrics(hist)
                     if m and m['passed_filter']:
@@ -251,6 +245,6 @@ if stock_list:
             st.session_state.last_index += 1
             progress_placeholder.progress(st.session_state.last_index / len(stock_list))
             
-            # Update UI every 5 stocks to ensure results remain visible during rerun
-            if st.session_state.last_index % 5 == 0: 
+            # Update the table placeholder live every 5 stocks
+            if st.session_state.last_index % 5 == 0:
                 st.rerun()
