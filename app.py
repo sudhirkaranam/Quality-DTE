@@ -85,7 +85,12 @@ def calculate_dte_metrics(df):
         max_vol_idx = df['volume'].idxmax()
         dte_price = get_tip_price(df, 'volume', max_vol_idx)
         percent_gap = ((dte_price - current_price) / current_price) * 100
-        return {'gap': round(percent_gap, 2), 'price': round(current_price, 2), 'dte_lvl': dte_price, 'date': max_vol_idx.strftime('%Y-%m-%d')}
+        return {
+            'Price': round(current_price, 2), 
+            'DTE_Price': dte_price, 
+            'Gap%': round(percent_gap, 2), 
+            'Peak_Date': max_vol_idx.strftime('%Y-%m-%d')
+        }
     except: return None
 
 def get_mfi_metrics(df):
@@ -109,7 +114,7 @@ def get_mfi_metrics(df):
     actual_at_peak = df.loc[max_mfi_idx, 'close']
     tip_price = get_tip_price(df, 'mfi', max_mfi_idx)
     
-    # Check if closing price reached Tip Price strictly post-peak
+    # Check if price reached Tip strictly post-peak
     pos = df.index.get_loc(max_mfi_idx)
     post_peak_df = df.iloc[pos+1:]
     reached_tip = "No"
@@ -137,6 +142,7 @@ if st.session_state.nifty_data_df.empty:
 st.sidebar.title("🛠️ Navigation")
 page = st.sidebar.radio("Navigation", ["Scanner", "DTE Meter"])
 
+# Auto-reset if module changes
 if page != st.session_state.current_module:
     st.session_state.processed_results = []
     st.session_state.last_index = 0
@@ -148,8 +154,6 @@ if page != st.session_state.current_module:
 
 if page == "Scanner":
     st.title("🎯 MFI Multi-Timeframe Scanner")
-    st.markdown("Displays **Hourly, Daily, and Weekly** MFI metrics simultaneously.")
-    
     st.subheader("🔍 Single Stock NSE Lookup")
     quick_sym = st.text_input("Enter NSE Symbol:").strip().upper()
     if quick_sym:
@@ -160,7 +164,7 @@ if page == "Scanner":
             hist = tv.get_hist(symbol=quick_sym, exchange='NSE', interval=tint, n_bars=100)
             m = get_mfi_metrics(hist)
             if m:
-                m.update({'Timeframe': lbl})
+                m.update({'TF': lbl})
                 q_rows.append(m)
         if q_rows:
             st.write(f"**Sector:** {industry} | **Nifty 500:** {is_n500}")
@@ -178,7 +182,7 @@ elif page == "DTE Meter":
             hist = tv.get_hist(symbol=quick_sym, exchange='NSE', interval=tint, n_bars=100)
             d = calculate_dte_metrics(hist)
             if d:
-                d.update({"Interval": lbl, "Sector": industry, "Nifty 500": is_n500})
+                d.update({"TF": lbl, "Sector": industry, "Nifty 500": is_n500})
                 q_res.append(d)
         if q_res: st.table(pd.DataFrame(q_res))
 
@@ -227,19 +231,18 @@ if stock_list:
             industry, is_n500 = get_stock_info(sym, st.session_state.nifty_data_df)
             try:
                 if page == "DTE Meter":
-                    metrics, cp = {}, 0
-                    for lbl, tint in {'D': Interval.in_daily, 'W': Interval.in_weekly}.items():
+                    # Put Daily and Weekly in two rows per stock
+                    for lbl, tint in {'Daily': Interval.in_daily, 'Weekly': Interval.in_weekly}.items():
                         hist = tv.get_hist(symbol=sym, exchange='NSE', interval=tint, n_bars=100)
                         d = calculate_dte_metrics(hist)
                         if d:
-                            metrics[f'{lbl}_Price'], metrics[f'{lbl}_Gap%'], cp = d['dte_lvl'], d['gap'], d['price']
-                    st.session_state.processed_results.append({
-                        'Symbol': sym, 'Nifty 500': is_n500, 'Sector': industry, 'Price': cp,
-                        'D_DTE': metrics.get('D_Price', 0), 'D_Gap%': metrics.get('D_Gap%', 0),
-                        'W_DTE': metrics.get('W_Price', 0), 'W_Gap%': metrics.get('W_Gap%', 0)
-                    })
+                            st.session_state.processed_results.append({
+                                'Symbol': sym, 'TF': lbl, 'Nifty 500': is_n500, 'Sector': industry,
+                                'Price': d['Price'], 'DTE_Price': d['DTE_Price'], 
+                                'Gap%': d['Gap%'], 'Date': d['Peak_Date']
+                            })
                 else: # MFI Mode - 3 Timeframes
-                    for lbl, tint in {'H': Interval.in_1_hour, 'D': Interval.in_daily, 'W': Interval.in_weekly}.items():
+                    for lbl, tint in {'Hourly': Interval.in_1_hour, 'Daily': Interval.in_daily, 'Weekly': Interval.in_weekly}.items():
                         hist = tv.get_hist(symbol=sym, exchange='NSE', interval=tint, n_bars=100)
                         m = get_mfi_metrics(hist)
                         if m and m['passed']:
