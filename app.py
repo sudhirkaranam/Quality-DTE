@@ -114,7 +114,7 @@ def get_mfi_metrics(df):
     actual_at_peak = df.loc[max_mfi_idx, 'close']
     tip_price = get_tip_price(df, 'mfi', max_mfi_idx)
     
-    # Check if price reached Tip strictly post-peak
+    # Check if price reached Tip post-peak
     pos = df.index.get_loc(max_mfi_idx)
     post_peak_df = df.iloc[pos+1:]
     reached_tip = "No"
@@ -142,7 +142,6 @@ if st.session_state.nifty_data_df.empty:
 st.sidebar.title("🛠️ Navigation")
 page = st.sidebar.radio("Navigation", ["Scanner", "DTE Meter"])
 
-# Auto-reset if module changes
 if page != st.session_state.current_module:
     st.session_state.processed_results = []
     st.session_state.last_index = 0
@@ -193,12 +192,16 @@ st.divider()
 st.subheader("📑 Batch Scanner")
 uploaded_file = st.file_uploader("Upload Symbols Excel", type=["xlsx", "xls"])
 stock_list = []
+source_mode = "manual" # Default
+
 if uploaded_file:
     df_in = pd.read_excel(uploaded_file)
     sym_col = next((c for c in df_in.columns if c.lower() == 'symbol'), None)
     if sym_col: stock_list = df_in[sym_col].dropna().astype(str).tolist()
+    source_mode = "upload"
 elif st.checkbox("Use NIFTY 500 Index"):
     stock_list = st.session_state.nifty_data_df['SYMBOL'].tolist()
+    source_mode = "nifty500"
 
 if stock_list:
     c1, c2, c3 = st.columns(3)
@@ -231,7 +234,7 @@ if stock_list:
             industry, is_n500 = get_stock_info(sym, st.session_state.nifty_data_df)
             try:
                 if page == "DTE Meter":
-                    # Put Daily and Weekly in two rows per stock
+                    # For Upload: Show all rows | For Nifty500: Logic remains multi-row
                     for lbl, tint in {'Daily': Interval.in_daily, 'Weekly': Interval.in_weekly}.items():
                         hist = tv.get_hist(symbol=sym, exchange='NSE', interval=tint, n_bars=100)
                         d = calculate_dte_metrics(hist)
@@ -241,16 +244,19 @@ if stock_list:
                                 'Price': d['Price'], 'DTE_Price': d['DTE_Price'], 
                                 'Gap%': d['Gap%'], 'Date': d['Peak_Date']
                             })
-                else: # MFI Mode - 3 Timeframes
+                else: # MFI Mode
                     for lbl, tint in {'Hourly': Interval.in_1_hour, 'Daily': Interval.in_daily, 'Weekly': Interval.in_weekly}.items():
                         hist = tv.get_hist(symbol=sym, exchange='NSE', interval=tint, n_bars=100)
                         m = get_mfi_metrics(hist)
-                        if m and m['passed']:
-                            st.session_state.processed_results.append({
-                                'Symbol': sym, 'TF': lbl, 'Nifty 500': is_n500, 'Sector': industry, 
-                                'Price': m['Price'], 'Actual_Pk': m['Actual_Peak'], 'Tip': m['Tip_Price'],
-                                'Reach?': m['Reached_Tip'], 'Color': m['Color'], 'Int%': m['Intensity%'], 'Date': m['Peak_Date']
-                            })
+                        if m:
+                            # CONDITIONAL LOGIC
+                            # Nifty500: Filter symbols | Upload: Show all details
+                            if source_mode == "upload" or m['passed']:
+                                st.session_state.processed_results.append({
+                                    'Symbol': sym, 'TF': lbl, 'Nifty 500': is_n500, 'Sector': industry, 
+                                    'Price': m['Price'], 'Actual_Pk': m['Actual_Peak'], 'Tip': m['Tip_Price'],
+                                    'Reach?': m['Reached_Tip'], 'Color': m['Color'], 'Int%': m['Intensity%'], 'Date': m['Peak_Date']
+                                })
             except: pass
             st.session_state.last_index += 1
             progress_placeholder.progress(st.session_state.last_index / len(stock_list))
