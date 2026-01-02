@@ -13,24 +13,14 @@ matplotlib.use('Agg')
 
 st.set_page_config(page_title="Stock Analysis Hub", layout="wide")
 
-# --- 1. INITIALIZE SESSION STATE ---
-if 'processed_results' not in st.session_state:
-    st.session_state.processed_results = []
-if 'last_index' not in st.session_state:
-    st.session_state.last_index = 0
-if 'is_running' not in st.session_state:
-    st.session_state.is_running = False
-if 'nifty_data_df' not in st.session_state:
-    st.session_state.nifty_data_df = fetch_nse_master_data() if 'nifty_data_df' not in st.session_state else st.session_state.nifty_data_df
-if 'current_module' not in st.session_state:
-    st.session_state.current_module = "Scanner"
+# --- 1. DEFINE HELPER FUNCTIONS FIRST ---
 
-# --- 2. HELPER FUNCTIONS ---
 @st.cache_resource
 def get_tv_connection():
     return TvDatafeed()
 
 def fetch_nse_master_data():
+    """Fetches the official Nifty 500 list."""
     url = "https://archives.nseindia.com/content/indices/ind_nifty500list.csv"
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
@@ -92,7 +82,36 @@ def get_mfi_metrics(df):
         'passed': (prox_pct < 2.0) and (int_pct > 15.0)
     }
 
-# --- 3. NAVIGATION & RESET ---
+def calculate_dte_metrics(df):
+    try:
+        if df is None or df.empty or len(df) < 15: return None
+        current_price = df['close'].iloc[-1]
+        max_vol_idx = df['volume'].idxmax()
+        dte_price = get_tip_price(df, 'volume', max_vol_idx)
+        percent_gap = ((dte_price - current_price) / current_price) * 100
+        return {
+            'Price': round(current_price, 2), 
+            'DTE_Price': dte_price, 
+            'Gap%': round(percent_gap, 2), 
+            'Peak_Date': max_vol_idx.strftime('%Y-%m-%d')
+        }
+    except: return None
+
+# --- 2. INITIALIZE SESSION STATE ---
+
+if 'processed_results' not in st.session_state:
+    st.session_state.processed_results = []
+if 'last_index' not in st.session_state:
+    st.session_state.last_index = 0
+if 'is_running' not in st.session_state:
+    st.session_state.is_running = False
+if 'nifty_data_df' not in st.session_state:
+    st.session_state.nifty_data_df = fetch_nse_master_data()
+if 'current_module' not in st.session_state:
+    st.session_state.current_module = "Scanner"
+
+# --- 3. NAVIGATION ---
+
 st.sidebar.title("🛠️ Navigation")
 page = st.sidebar.radio("Module", ["Scanner", "DTE Meter"])
 
@@ -104,6 +123,7 @@ if page != st.session_state.current_module:
     st.rerun()
 
 # --- 4. MAIN UI & SINGLE LOOKUP ---
+
 st.title(f"🚀 {page} Module")
 
 if page == "Scanner":
@@ -117,13 +137,29 @@ if page == "Scanner":
             hist = tv.get_hist(symbol=quick_sym, exchange='NSE', interval=tint, n_bars=100)
             m = get_mfi_metrics(hist)
             if m:
-                m.update({'TF': lbl})
-                q_rows.append(m)
+                m.update({'TF': lbl}); q_rows.append(m)
         if q_rows:
             st.write(f"**Sector:** {industry}")
             st.table(pd.DataFrame(q_rows).drop(columns=['passed']))
 
+elif page == "DTE Meter":
+    st.subheader("🔍 Quick DTE Lookup")
+    quick_sym = st.text_input("Enter NSE Symbol:").strip().upper()
+    if quick_sym:
+        industry = get_stock_info(quick_sym, st.session_state.nifty_data_df)
+        tv = get_tv_connection()
+        q_res = []
+        for lbl, tint in {'Daily': Interval.in_daily, 'Weekly': Interval.in_weekly}.items():
+            hist = tv.get_hist(symbol=quick_sym, exchange='NSE', interval=tint, n_bars=100)
+            d = calculate_dte_metrics(hist)
+            if d:
+                d.update({"TF": lbl}); q_res.append(d)
+        if q_res:
+            st.write(f"**Sector:** {industry}")
+            st.table(pd.DataFrame(q_res))
+
 # --- 5. BATCH SCANNER UI ---
+
 st.divider()
 st.subheader("📑 Batch Scanner")
 uploaded_file = st.file_uploader("Upload Symbols Excel", type=["xlsx", "xls"])
@@ -149,11 +185,11 @@ if c3.button("🔄 Reset"):
     st.session_state.is_running = False; st.rerun()
 
 # --- 6. RESULTS DISPLAY ---
+
 if st.session_state.processed_results:
     st.write("---")
     df_res = pd.DataFrame(st.session_state.processed_results)
     
-    # Logic: Only unique symbols for Nifty 500 scan
     if source_mode == "nifty500" and not df_res.empty:
         df_res = df_res.drop_duplicates(subset=['Symbol'])
         
@@ -165,6 +201,7 @@ if st.session_state.processed_results:
     st.download_button("💾 Download Report", output.getvalue(), f"{page}_Report_{dl_date}.xlsx")
 
 # --- 7. PROCESSING ENGINE ---
+
 if st.session_state.is_running and st.session_state.last_index < len(stock_list):
     progress_bar = st.progress(st.session_state.last_index / len(stock_list))
     tv = get_tv_connection()
@@ -180,10 +217,7 @@ if st.session_state.is_running and st.session_state.last_index < len(stock_list)
                     m = get_mfi_metrics(hist)
                     if m:
                         if source_mode == "nifty500" and m['passed']:
-                            # Unique record logic: No timeframe col, unique symbol
-                            st.session_state.processed_results.append({
-                                'Symbol': sym, 'Sector': industry, 'Price': m['Price']
-                            })
+                            st.session_state.processed_results.append({'Symbol': sym, 'Sector': industry, 'Price': m['Price']})
                         elif source_mode == "upload":
                             st.session_state.processed_results.append({
                                 'Symbol': sym, 'TF': lbl, 'Sector': industry, 'Price': m['Price'],
@@ -193,8 +227,12 @@ if st.session_state.is_running and st.session_state.last_index < len(stock_list)
             else: # DTE Meter
                 for lbl, tint in {'Daily': Interval.in_daily, 'Weekly': Interval.in_weekly}.items():
                     hist = tv.get_hist(symbol=sym, exchange='NSE', interval=tint, n_bars=100)
-                    # DTE logic would go here
-                    st.session_state.processed_results.append({'Symbol': sym, 'TF': lbl, 'Sector': industry, 'Price': hist['close'].iloc[-1]})
+                    d = calculate_dte_metrics(hist)
+                    if d:
+                        st.session_state.processed_results.append({
+                            'Symbol': sym, 'TF': lbl, 'Sector': industry, 'Price': d['Price'],
+                            'DTE_Price': d['DTE_Price'], 'Gap%': d['Gap%'], 'Date': d['Peak_Date']
+                        })
         except: pass
         
     st.session_state.last_index += len(chunk)
