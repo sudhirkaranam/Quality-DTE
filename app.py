@@ -33,6 +33,7 @@ def get_tv_connection():
 
 @st.cache_data
 def fetch_nse_master_data():
+    """Fetches the official Nifty 500 list."""
     url = "https://archives.nseindia.com/content/indices/ind_nifty500list.csv"
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
@@ -44,6 +45,7 @@ def fetch_nse_master_data():
         return pd.DataFrame()
 
 def get_stock_info(sym, master_df):
+    """Retrieves Industry and Nifty 500 status."""
     is_nifty500 = "No"
     industry = "N/A"
     if not master_df.empty and sym in master_df['SYMBOL'].values:
@@ -57,6 +59,7 @@ def get_stock_info(sym, master_df):
     return industry, is_nifty500
 
 def get_tip_price(df, target_series_name, target_idx):
+    """Scales Volume or MFI peaks to the Price axis."""
     try:
         fig, ax1 = plt.subplots()
         ax1.plot(df.index, df['close'])
@@ -75,6 +78,7 @@ def get_tip_price(df, target_series_name, target_idx):
 # --- MODULE CALCULATIONS ---
 
 def calculate_dte_metrics(df):
+    """Volume-based DTE logic."""
     try:
         if df is None or df.empty or len(df) < 15: return None
         current_price = df['close'].iloc[-1]
@@ -85,11 +89,13 @@ def calculate_dte_metrics(df):
     except: return None
 
 def get_mfi_metrics(df):
+    """Calculates MFI Tip and check logic."""
     if df is None or df.empty or len(df) < 2: return None
     df = df.copy()
     current_price = df['close'].iloc[-1]
     df['mfi'] = (df['high'] - df['low']) / df['volume']
     
+    # Bill Williams Coloring
     df['mfi_up'] = df['mfi'] > df['mfi'].shift(1)
     df['vol_up'] = df['volume'] > df['volume'].shift(1)
     def determine_color(row):
@@ -103,15 +109,24 @@ def get_mfi_metrics(df):
     actual_at_peak = df.loc[max_mfi_idx, 'close']
     tip_price = get_tip_price(df, 'mfi', max_mfi_idx)
     
+    # Check if closing price reached Tip Price strictly post-peak
+    pos = df.index.get_loc(max_mfi_idx)
+    post_peak_df = df.iloc[pos+1:]
+    reached_tip = "No"
+    if not post_peak_df.empty:
+        if post_peak_df['close'].max() >= tip_price:
+            reached_tip = "Yes"
+
     prox_to_actual = abs((current_price - actual_at_peak) / actual_at_peak) * 100
     tip_to_actual_diff = abs((tip_price - actual_at_peak) / actual_at_peak) * 100
     is_filtered = (prox_to_actual < 2.0) and (tip_to_actual_diff > 15.0)
     
     return {
-        'curr_price': round(current_price, 2), 'actual_at_mfi': round(actual_at_peak, 2),
-        'tip_price': round(tip_price, 2), 'prox_pct': round(prox_to_actual, 2),
-        'diff_pct': round(tip_to_actual_diff, 2), 'mfi_date': max_mfi_idx.strftime('%Y-%m-%d %H:%M'),
-        'mfi_color': df.loc[max_mfi_idx, 'mfi_color'], 'passed_filter': is_filtered
+        'Price': round(current_price, 2), 'Actual_Peak': round(actual_at_peak, 2),
+        'Tip_Price': round(tip_price, 2), 'Reached_Tip': reached_tip,
+        'Prox%': round(prox_to_actual, 2), 'Intensity%': round(tip_to_actual_diff, 2),
+        'Peak_Date': max_mfi_idx.strftime('%Y-%m-%d %H:%M'), 'Color': df.loc[max_mfi_idx, 'mfi_color'],
+        'passed': is_filtered
     }
 
 # --- NAVIGATION AREA ---
@@ -119,10 +134,9 @@ def get_mfi_metrics(df):
 if st.session_state.nifty_data_df.empty:
     st.session_state.nifty_data_df = fetch_nse_master_data()
 
-#st.sidebar.title("🛠️ Navigation")
-page = st.sidebar.radio("Select a Module", ["Scanner", "DTE Meter"])
+st.sidebar.title("🛠️ Navigation")
+page = st.sidebar.radio("Navigation", ["Scanner", "DTE Meter"])
 
-# Auto-reset if module changes
 if page != st.session_state.current_module:
     st.session_state.processed_results = []
     st.session_state.last_index = 0
@@ -130,35 +144,32 @@ if page != st.session_state.current_module:
     st.session_state.current_module = page
     st.rerun()
 
-if page == "DTE Meter":
-    st.sidebar.info("⏳ Timeframe: Daily & Weekly (Fixed)")
-    timeframe_label = "Daily_Weekly"
-    selected_interval = None
-else:
-    timeframe_label = st.sidebar.selectbox("Select Timeframe Interval:", ["Hourly", "Daily", "Weekly"])
-    interval_map = {"Hourly": Interval.in_1_hour, "Daily": Interval.in_daily, "Weekly": Interval.in_weekly}
-    selected_interval = interval_map[timeframe_label]
-
 # --- MAIN UI ---
 
 if page == "Scanner":
-    st.title("🎯 MFI Scanner")
+    st.title("🎯 MFI Multi-Timeframe Scanner")
+    st.markdown("Displays **Hourly, Daily, and Weekly** MFI metrics simultaneously.")
+    
     st.subheader("🔍 Single Stock NSE Lookup")
-    quick_sym = st.text_input("Enter NSE Symbol:", key="mfi_quick").strip().upper()
+    quick_sym = st.text_input("Enter NSE Symbol:").strip().upper()
     if quick_sym:
         industry, is_n500 = get_stock_info(quick_sym, st.session_state.nifty_data_df)
         tv = get_tv_connection()
-        hist = tv.get_hist(symbol=quick_sym, exchange='NSE', interval=selected_interval, n_bars=100)
-        m = get_mfi_metrics(hist)
-        if m:
-            m.update({'Sector': industry, 'Nifty 500': is_n500})
-            st.table(pd.DataFrame([m]))
-            if m['passed_filter']: st.success("✅ Passed Strategy Filters")
+        q_rows = []
+        for lbl, tint in {'Hourly': Interval.in_1_hour, 'Daily': Interval.in_daily, 'Weekly': Interval.in_weekly}.items():
+            hist = tv.get_hist(symbol=quick_sym, exchange='NSE', interval=tint, n_bars=100)
+            m = get_mfi_metrics(hist)
+            if m:
+                m.update({'Timeframe': lbl})
+                q_rows.append(m)
+        if q_rows:
+            st.write(f"**Sector:** {industry} | **Nifty 500:** {is_n500}")
+            st.table(pd.DataFrame(q_rows).drop(columns=['passed']))
 
 elif page == "DTE Meter":
     st.title("📊 Stock DTE Meter")
     st.subheader("🔍 Quick DTE Lookup")
-    quick_sym = st.text_input("Enter NSE Symbol:", key="dte_quick").strip().upper()
+    quick_sym = st.text_input("Enter NSE Symbol:").strip().upper()
     if quick_sym:
         industry, is_n500 = get_stock_info(quick_sym, st.session_state.nifty_data_df)
         tv = get_tv_connection()
@@ -175,7 +186,7 @@ st.divider()
 
 # --- BATCH SCANNER ---
 
-st.subheader("📑 Batch Processor")
+st.subheader("📑 Batch Scanner")
 uploaded_file = st.file_uploader("Upload Symbols Excel", type=["xlsx", "xls"])
 stock_list = []
 if uploaded_file:
@@ -187,7 +198,7 @@ elif st.checkbox("Use NIFTY 500 Index"):
 
 if stock_list:
     c1, c2, c3 = st.columns(3)
-    if c1.button("🚀 Start Processing"): 
+    if c1.button("🚀 Start Scanner"): 
         st.session_state.processed_results = []; st.session_state.last_index = 0
         st.session_state.is_running = True
     if c2.button("Pause"): st.session_state.is_running = False
@@ -195,24 +206,20 @@ if stock_list:
         st.session_state.processed_results = []; st.session_state.last_index = 0
         st.session_state.is_running = False; st.rerun()
 
-    # --- THE FIX: PLACEHOLDERS FOR PERSISTENT UI ---
     progress_placeholder = st.empty()
     table_placeholder = st.empty()
-    download_placeholder = st.empty()
 
-    # Show existing data immediately upon rerun
     if st.session_state.processed_results:
         df_display = pd.DataFrame(st.session_state.processed_results)
         table_placeholder.dataframe(df_display, width=1200)
         
         dl_date = datetime.now().strftime("%Y-%m-%d")
-        filename = f"{page}_Report_{timeframe_label}_{dl_date}.xlsx"
+        filename = f"{page}_Report_{dl_date}.xlsx"
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             df_display.to_excel(writer, index=False, sheet_name='Report')
-        download_placeholder.download_button("💾 Download Results", output.getvalue(), filename)
+        st.download_button("💾 Download Results", output.getvalue(), filename)
 
-    # PROCESSOR
     if st.session_state.is_running and st.session_state.last_index < len(stock_list):
         tv = get_tv_connection()
         while st.session_state.last_index < len(stock_list) and st.session_state.is_running:
@@ -231,20 +238,17 @@ if stock_list:
                         'D_DTE': metrics.get('D_Price', 0), 'D_Gap%': metrics.get('D_Gap%', 0),
                         'W_DTE': metrics.get('W_Price', 0), 'W_Gap%': metrics.get('W_Gap%', 0)
                     })
-                else: # MFI Mode
-                    hist = tv.get_hist(symbol=sym, exchange='NSE', interval=selected_interval, n_bars=100)
-                    m = get_mfi_metrics(hist)
-                    if m and m['passed_filter']:
-                        st.session_state.processed_results.append({
-                            'Symbol': sym, 'Nifty 500': is_n500, 'Sector': industry, 'Price': m['curr_price'],
-                            'Actual @ Max MFI': m['actual_at_mfi'], 'Tip Price': m['tip_price'],
-                            'MFI Color': m['mfi_color'], 'Intensity Diff%': m['diff_pct'], 'Peak Date': m['mfi_date']
-                        })
+                else: # MFI Mode - 3 Timeframes
+                    for lbl, tint in {'H': Interval.in_1_hour, 'D': Interval.in_daily, 'W': Interval.in_weekly}.items():
+                        hist = tv.get_hist(symbol=sym, exchange='NSE', interval=tint, n_bars=100)
+                        m = get_mfi_metrics(hist)
+                        if m and m['passed']:
+                            st.session_state.processed_results.append({
+                                'Symbol': sym, 'TF': lbl, 'Nifty 500': is_n500, 'Sector': industry, 
+                                'Price': m['Price'], 'Actual_Pk': m['Actual_Peak'], 'Tip': m['Tip_Price'],
+                                'Reach?': m['Reached_Tip'], 'Color': m['Color'], 'Int%': m['Intensity%'], 'Date': m['Peak_Date']
+                            })
             except: pass
-            
             st.session_state.last_index += 1
             progress_placeholder.progress(st.session_state.last_index / len(stock_list))
-            
-            # Update the table placeholder live every 5 stocks
-            if st.session_state.last_index % 5 == 0:
-                st.rerun()
+            if st.session_state.last_index % 5 == 0: st.rerun()
