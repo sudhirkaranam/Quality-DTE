@@ -13,7 +13,7 @@ matplotlib.use('Agg')
 
 st.set_page_config(page_title="Stock Analysis Hub", layout="wide")
 
-# --- 1. DEFINE HELPER FUNCTIONS FIRST ---
+# --- 1. DEFINE HELPER FUNCTIONS ---
 
 @st.cache_resource
 def get_tv_connection():
@@ -67,8 +67,8 @@ def get_mfi_metrics(df):
     actual_at_peak = df.loc[max_mfi_idx, 'close']
     tip_price = get_tip_price(df, 'mfi', max_mfi_idx)
     
-    pos = df.index.get_loc(max_mfi_idx)
-    post_peak_df = df.iloc[pos+1:]
+    # Check if price reached Tip post-peak
+    post_peak_df = df.iloc[df.index.get_loc(max_mfi_idx)+1:]
     reached = "Yes" if not post_peak_df.empty and post_peak_df['close'].max() >= tip_price else "No"
     
     prox_pct = abs((current_price - actual_at_peak) / actual_at_peak) * 100
@@ -83,15 +83,22 @@ def get_mfi_metrics(df):
     }
 
 def calculate_dte_metrics(df):
+    """Calculates DTE Price and checks if price touched it post-peak volume."""
     try:
         if df is None or df.empty or len(df) < 15: return None
         current_price = df['close'].iloc[-1]
         max_vol_idx = df['volume'].idxmax()
         dte_price = get_tip_price(df, 'volume', max_vol_idx)
+        
+        # Post-peak volume reach check
+        post_peak_df = df.iloc[df.index.get_loc(max_vol_idx)+1:]
+        reached = "Yes" if not post_peak_df.empty and post_peak_df['close'].max() >= dte_price else "No"
+        
         percent_gap = ((dte_price - current_price) / current_price) * 100
         return {
             'Price': round(current_price, 2), 
             'DTE_Price': dte_price, 
+            'Reached': reached,
             'Gap%': round(percent_gap, 2), 
             'Peak_Date': max_vol_idx.strftime('%Y-%m-%d')
         }
@@ -149,7 +156,7 @@ elif page == "DTE Meter":
         industry = get_stock_info(quick_sym, st.session_state.nifty_data_df)
         tv = get_tv_connection()
         q_res = []
-        for lbl, tint in {'Daily': Interval.in_daily, 'Weekly': Interval.in_weekly}.items():
+        for lbl, tint in {'Hourly': Interval.in_1_hour, 'Daily': Interval.in_daily, 'Weekly': Interval.in_weekly}.items():
             hist = tv.get_hist(symbol=quick_sym, exchange='NSE', interval=tint, n_bars=100)
             d = calculate_dte_metrics(hist)
             if d:
@@ -179,8 +186,8 @@ c1, c2, c3 = st.columns(3)
 if c1.button("▶️ Start Scan"):
     st.session_state.processed_results = []; st.session_state.last_index = 0
     st.session_state.is_running = True
-if c2.button("⏸️ Pause"): st.session_state.is_running = False
-if c3.button("🔄 Reset"):
+if c2.button("Pause"): st.session_state.is_running = False
+if c3.button("Reset"):
     st.session_state.processed_results = []; st.session_state.last_index = 0
     st.session_state.is_running = False; st.rerun()
 
@@ -224,14 +231,14 @@ if st.session_state.is_running and st.session_state.last_index < len(stock_list)
                                 'Peak_Pk': m['Actual_Peak'], 'Tip': m['Tip'], 'Reached': m['Reached'],
                                 'Prox%': m['Prox%'], 'Int%': m['Int%'], 'Date': m['Date']
                             })
-            else: # DTE Meter
-                for lbl, tint in {'Daily': Interval.in_daily, 'Weekly': Interval.in_weekly}.items():
+            else: # DTE Meter - Hourly, Daily, Weekly
+                for lbl, tint in {'H': Interval.in_1_hour, 'D': Interval.in_daily, 'W': Interval.in_weekly}.items():
                     hist = tv.get_hist(symbol=sym, exchange='NSE', interval=tint, n_bars=100)
                     d = calculate_dte_metrics(hist)
                     if d:
                         st.session_state.processed_results.append({
                             'Symbol': sym, 'TF': lbl, 'Sector': industry, 'Price': d['Price'],
-                            'DTE_Price': d['DTE_Price'], 'Gap%': d['Gap%'], 'Date': d['Peak_Date']
+                            'DTE_Price': d['DTE_Price'], 'Reached': d['Reached'], 'Gap%': d['Gap%'], 'Date': d['Peak_Date']
                         })
         except: pass
         
