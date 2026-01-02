@@ -66,11 +66,13 @@ def get_mfi_metrics(df):
     actual_at_peak = df.loc[max_mfi_idx, 'close']
     tip_price = get_tip_price(df, 'mfi', max_mfi_idx)
     
+    # Check if price reached Tip post-peak
     post_peak_df = df.iloc[df.index.get_loc(max_mfi_idx)+1:]
     reached = "Yes" if not post_peak_df.empty and post_peak_df['close'].max() >= tip_price else "No"
     
+    # Updated Intensity Formula: Current Price vs Tip Price
     prox_pct = abs((current_price - actual_at_peak) / actual_at_peak) * 100
-    int_pct = abs((tip_price - actual_at_peak) / actual_at_peak) * 100
+    int_pct = abs((tip_price - current_price) / current_price) * 100
     
     return {
         'Price': round(current_price, 2), 'Actual_Peak': round(actual_at_peak, 2),
@@ -88,8 +90,15 @@ def calculate_dte_metrics(df):
         dte_price = get_tip_price(df, 'volume', max_vol_idx)
         post_peak_df = df.iloc[df.index.get_loc(max_vol_idx)+1:]
         reached = "Yes" if not post_peak_df.empty and post_peak_df['close'].max() >= dte_price else "No"
-        percent_gap = ((dte_price - current_price) / current_price) * 100
-        return {'Price': round(current_price, 2), 'DTE_Price': dte_price, 'Reached': reached, 'Gap%': round(percent_gap, 2), 'Peak_Date': max_vol_idx.strftime('%Y-%m-%d')}
+        # Intensity logic for DTE: Current Price vs DTE Price
+        percent_gap = abs((dte_price - current_price) / current_price) * 100
+        return {
+            'Price': round(current_price, 2), 
+            'DTE_Price': dte_price, 
+            'Reached': reached, 
+            'Int%': round(percent_gap, 2), 
+            'Peak_Date': max_vol_idx.strftime('%Y-%m-%d')
+        }
     except: return None
 
 # --- 2. INITIALIZE SESSION STATE ---
@@ -108,7 +117,7 @@ if 'current_module' not in st.session_state:
 # --- 3. NAVIGATION ---
 
 st.sidebar.title("🛠️ Navigation")
-page = st.sidebar.radio("Module", ["Scanner", "DTE Meter"])
+page = st.sidebar.radio("Modules :", ["Scanner", "DTE Meter"])
 
 if page != st.session_state.current_module:
     st.session_state.processed_results = []
@@ -170,8 +179,7 @@ if uploaded_file:
 elif st.checkbox("Use NIFTY 500 Index"):
     stock_list = st.session_state.nifty_data_df['SYMBOL'].tolist()
     source_mode = "nifty500"
-    if page == "Scanner":
-        selected_tf_label = st.selectbox("Filter NIFTY 500 by Timeframe:", ["All", "Hourly", "Daily", "Weekly"])
+    selected_tf_label = st.selectbox("Filter NIFTY 500 by Timeframe:", ["All", "Hourly", "Daily", "Weekly"])
 
 c1, c2, c3 = st.columns(3)
 if c1.button("▶️ Start Scan"):
@@ -188,13 +196,11 @@ if st.session_state.processed_results:
     st.write("---")
     df_res = pd.DataFrame(st.session_state.processed_results)
     
-    # Apply unique symbol logic only if "All" is selected in Nifty 500 mode
     if source_mode == "nifty500" and selected_tf_label == "All" and not df_res.empty:
         df_res = df_res.drop_duplicates(subset=['Symbol'])
         
     st.dataframe(df_res, width=1400)
     dl_date = datetime.now().strftime("%Y-%m-%d")
-    # Dynamic filename including timeframe
     filename = f"{page}_{selected_tf_label}_Report_{dl_date}.xlsx"
     
     output = io.BytesIO()
@@ -209,7 +215,6 @@ if st.session_state.is_running and st.session_state.last_index < len(stock_list)
     tv = get_tv_connection()
     chunk = stock_list[st.session_state.last_index : st.session_state.last_index + 5]
     
-    # Map for the loops
     tf_map = {'Hourly': Interval.in_1_hour, 'Daily': Interval.in_daily, 'Weekly': Interval.in_weekly}
     if selected_tf_label != "All":
         active_tfs = {selected_tf_label: tf_map[selected_tf_label]}
@@ -227,8 +232,7 @@ if st.session_state.is_running and st.session_state.last_index < len(stock_list)
                     if m:
                         if source_mode == "nifty500" and m['passed']:
                             row = {'Symbol': sym, 'Sector': industry, 'Price': m['Price']}
-                            if selected_tf_label != "All":
-                                row.update({'TF': lbl}) # Include TF if specific one selected
+                            if selected_tf_label != "All": row.update({'TF': lbl})
                             st.session_state.processed_results.append(row)
                         elif source_mode == "upload":
                             st.session_state.processed_results.append({
@@ -237,14 +241,13 @@ if st.session_state.is_running and st.session_state.last_index < len(stock_list)
                                 'Prox%': m['Prox%'], 'Int%': m['Int%'], 'Date': m['Date']
                             })
             else: # DTE Meter
-                dte_tfs = active_tfs if selected_tf_label != "All" else {'H': Interval.in_1_hour, 'D': Interval.in_daily, 'W': Interval.in_weekly}
-                for lbl, tint in dte_tfs.items():
+                for lbl, tint in active_tfs.items():
                     hist = tv.get_hist(symbol=sym, exchange='NSE', interval=tint, n_bars=100)
                     d = calculate_dte_metrics(hist)
                     if d:
                         st.session_state.processed_results.append({
                             'Symbol': sym, 'TF': lbl, 'Sector': industry, 'Price': d['Price'],
-                            'DTE_Price': d['DTE_Price'], 'Reached': d['Reached'], 'Gap%': d['Gap%'], 'Date': d['Peak_Date']
+                            'DTE_Price': d['DTE_Price'], 'Reached': d['Reached'], 'Int%': d['Int%'], 'Date': d['Peak_Date']
                         })
         except: pass
         
